@@ -1,0 +1,20 @@
+{
+  "name": "unified-peers-mcp",
+  "version": "0.1.0",
+  "description": "Cross-runtime peer messaging broker. Hosts a single localhost daemon and CLI shared by opencode-peers, claude-peers, and any future agent runtime.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "broker": "bun broker.ts",
+    "diagnose": "bun cli.ts diagnose"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  }
+}
