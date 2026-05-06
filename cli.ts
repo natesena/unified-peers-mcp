@@ -381,8 +381,17 @@ switch (cmd) {
     try {
       const health = await brokerFetch<{ status: string; peers: number }>("/health");
       console.log(`Broker has ${health.peers} peer(s). Shutting down...`);
-      const proc = Bun.spawnSync(["lsof", "-ti", `:${BROKER_PORT}`]);
+      // -t              terse (pids only)
+      // -iTCP:PORT      TCP sockets on this port
+      // -sTCP:LISTEN    state filter — only the listening server, NEVER connected clients.
+      // Without -sTCP:LISTEN, lsof returns every MCP peer's socket too, and we'd SIGTERM
+      // them all (including this cli.ts process, which still has its /health socket).
+      const proc = Bun.spawnSync(["lsof", "-t", `-iTCP:${BROKER_PORT}`, "-sTCP:LISTEN"]);
       const pids = new TextDecoder().decode(proc.stdout).trim().split("\n").filter((p) => p);
+      if (pids.length === 0) {
+        console.log(`${WARN} Broker responded to /health but no LISTEN socket found on port ${BROKER_PORT}. Nothing to kill.`);
+        break;
+      }
       for (const pid of pids) process.kill(parseInt(pid), "SIGTERM");
       console.log("Broker stopped.");
     } catch {
