@@ -3,7 +3,7 @@
  *
  * Original bug: kill-broker invoked `lsof -ti :PORT`, which returns every pid
  * with a socket on the port — both the listening broker AND every connected
- * MCP client (claude-peers, opencode-peers) AND the cli.ts process itself.
+ * MCP client (unified-peers, opencode-peers) AND the cli.ts process itself.
  * The loop then SIGTERM'd all of them. Observed live on 2026-05-06: a single
  * kill-broker call killed 6 peer MCP servers and self-terminated cli.ts (143).
  *

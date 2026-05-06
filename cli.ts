@@ -219,7 +219,7 @@ async function cmdDiagnose() {
         }
       }
     } else if (p.runtime === "claude") {
-      lines.push(`     delivery:         MCP channel push (claude-peers polls broker every 1s, pushes via mcp.notification)`);
+      lines.push(`     delivery:         MCP channel push (unified-peers polls broker every 1s, pushes via mcp.notification)`);
     } else {
       lines.push(`     delivery:         ${C.dim}(runtime "${p.runtime}" — see shared/runtimes.ts)${C.reset}`);
     }

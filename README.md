@@ -70,17 +70,21 @@ bun cli.ts kill-broker       # stop the daemon
 Register the claude runtime's MCP server with Claude Code:
 
 ```sh
-claude mcp add --scope user --transport stdio claude-peers -- \
+claude mcp add --scope user --transport stdio unified-peers -- \
   bun /Users/<you>/Documents/code/unified-peers-mcp/runtimes/claude/server.ts
 ```
 
 Then run Claude Code with the channel:
 
 ```sh
-claude --dangerously-load-development-channels server:claude-peers
+claude --dangerously-load-development-channels server:unified-peers
 ```
 
 The broker auto-launches on first session.
+
+> **The name `unified-peers` must match in both commands.** Claude Code matches `--dangerously-load-development-channels server:NAME` against the entry name you passed to `claude mcp add`. If they disagree, every channel notification is silently dropped and the MCP server's stderr log will say `Channel notifications skipped: server X not in --channels list for this session`. Tools (`send_message`, `list_peers`, etc.) still work, but inbound messages never surface as `<channel source="unified-peers" ...>` blocks.
+>
+> **Migrating from `claude-peers`?** If you previously ran `claude mcp add ... claude-peers ...`, either rename the entry (`claude mcp remove claude-peers && claude mcp add ... unified-peers ...`) or keep launching with `server:claude-peers` — the flag must equal whatever your entry is called.
 
 ## Wiring up opencode
 

@@ -39,7 +39,7 @@ Read `README.md`'s "Adding a new runtime" section. Three steps, one file.
 
 ## Don't
 
-- Don't import from individual client repos (opencode-peers-mcp, claude-peers-mcp). The dependency direction is **clients → unified-peers-mcp**, never the reverse.
+- Don't import from individual client repos (e.g. opencode-peers-mcp). The dependency direction is **clients → unified-peers-mcp**, never the reverse. (The claude runtime has no separate client repo today; its MCP server lives at `runtimes/claude/server.ts` here.)
 - Don't add per-runtime fields to the `peers` table without first considering whether the runtime registry pattern can hold the data instead.
 - Don't migrate `~/.opencode-peers.db` automatically. If a user has the old DB, the broker will create `~/.peers.db` fresh; rename is a manual step.
 

@@ -8,11 +8,16 @@
  * experimental claude/channel notification.
  *
  * Usage (one-time):
- *   claude mcp add --scope user --transport stdio claude-peers -- \
+ *   claude mcp add --scope user --transport stdio unified-peers -- \
  *     bun /path/to/unified-peers-mcp/runtimes/claude/server.ts
  *
  * Then run Claude Code with the channel:
- *   claude --dangerously-load-development-channels server:claude-peers
+ *   claude --dangerously-load-development-channels server:unified-peers
+ *
+ * The name "unified-peers" must match in three places: the `claude mcp add`
+ * entry name, the `--dangerously-load-development-channels server:NAME` flag,
+ * and the `Server({name})` constructor below. If they disagree, Claude Code
+ * silently drops every channel notification ("server X not in --channels list").
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -86,7 +91,7 @@ async function ensureBroker(): Promise<void> {
 }
 
 function log(msg: string) {
-  console.error(`[claude-peers] ${msg}`);
+  console.error(`[unified-peers] ${msg}`);
 }
 
 async function getGitRoot(cwd: string): Promise<string | null> {
@@ -122,15 +127,15 @@ let myCwd = process.cwd();
 let myGitRoot: string | null = null;
 
 const mcp = new Server(
-  { name: "claude-peers", version: "0.2.0" },
+  { name: "unified-peers", version: "0.2.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: `You are connected to the claude-peers network. Other Claude Code instances on this machine — and any opencode windows running with opencode-peers — can see you and send you messages.
+    instructions: `You are connected to the unified-peers network. Other Claude Code instances on this machine — and any opencode windows running with opencode-peers — can see you and send you messages.
 
-IMPORTANT: When you receive a <channel source="claude-peers" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming peer messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
+IMPORTANT: When you receive a <channel source="unified-peers" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming peer messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
 
 Read the from_id, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with to_ids: [their from_id].
 

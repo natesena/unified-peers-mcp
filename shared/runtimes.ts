@@ -92,7 +92,7 @@ registerInstantDelivery("opencode", async (peer, fromId, text, ctx) => {
 });
 
 // claude runtime: no instant handler.
-//   The claude-peers MCP server polls the broker every 1s and pushes incoming
+//   The unified-peers MCP server polls the broker every 1s and pushes incoming
 //   messages into Claude Code via mcp.notification("notifications/claude/channel").
 //   No broker-initiated push is needed or possible (Claude Code only listens
 //   to its own MCP server's stdio, not random localhost HTTP).
