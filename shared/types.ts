@@ -79,6 +79,27 @@ export interface SendMessageResponse {
   latency_ms?: number;
 }
 
+export interface SendMessageMultiRequest {
+  from_id: PeerId;
+  to_ids: PeerId[];
+  text: string;
+}
+
+export interface SendMessageMultiResult {
+  to_id: PeerId;
+  ok: boolean;
+  error?: string;
+  delivered_via?: "instant" | "poll" | "poll_after_failure";
+  latency_ms?: number;
+}
+
+export interface SendMessageMultiResponse {
+  /** True iff every recipient in `results` has ok=true. */
+  ok: boolean;
+  /** One entry per requested to_id, in input order. */
+  results: SendMessageMultiResult[];
+}
+
 export interface PollMessagesRequest {
   id: PeerId;
 }

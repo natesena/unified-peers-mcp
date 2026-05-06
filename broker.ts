@@ -28,6 +28,9 @@ import type {
   RegisterPluginRequest,
   RegisterRequest,
   RegisterResponse,
+  SendMessageMultiRequest,
+  SendMessageMultiResponse,
+  SendMessageMultiResult,
   SendMessageRequest,
   SendMessageResponse,
   SetSummaryRequest,
@@ -227,48 +230,90 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
   });
 }
 
-async function handleSendMessage(body: SendMessageRequest): Promise<SendMessageResponse> {
-  const recipient = db.query("SELECT * FROM peers WHERE id = ?").get(body.to_id) as Peer | null;
-  if (!recipient) {
-    return { ok: false, error: `Peer ${body.to_id} not found` };
-  }
+interface SenderContext {
+  senderSummary: string;
+  senderCwd: string;
+  senderGitRoot: string | null;
+}
 
+function loadSenderContext(fromId: string): SenderContext {
   const sender = db.query("SELECT summary, cwd, git_root FROM peers WHERE id = ?")
-    .get(body.from_id) as { summary: string; cwd: string; git_root: string | null } | null;
-  const ctx = {
+    .get(fromId) as { summary: string; cwd: string; git_root: string | null } | null;
+  return {
     senderSummary: sender?.summary ?? "",
     senderCwd: sender?.cwd ?? "",
     senderGitRoot: sender?.git_root ?? null,
   };
+}
 
-  const now = new Date().toISOString();
+/**
+ * Deliver `text` to a single recipient. Used by both the single-send endpoint
+ * (`/send-message`) and the multi-send endpoint (`/send-message-multi`).
+ *
+ * Returns the same fields as SendMessageResponse minus the response wrapper —
+ * callers attach `to_id` / overall `ok` themselves.
+ */
+async function deliverToOne(
+  toId: string,
+  fromId: string,
+  text: string,
+  ctx: SenderContext,
+  now: string,
+): Promise<{ ok: boolean; error?: string; delivered_via?: "instant" | "poll" | "poll_after_failure"; latency_ms?: number }> {
+  const recipient = db.query("SELECT * FROM peers WHERE id = ?").get(toId) as Peer | null;
+  if (!recipient) {
+    return { ok: false, error: `Peer ${toId} not found` };
+  }
+
   const handler = getInstantDelivery(recipient.runtime);
 
   if (handler) {
-    const result = await handler(recipient, body.from_id, body.text, ctx);
+    const result = await handler(recipient, fromId, text, ctx);
     if (result.clear_runtime_state) {
       // Currently runtime-state-to-clear == plugin_port. If a future runtime
       // adds its own connection field, extend this with a runtime-specific clear.
-      clearPluginPort.run(body.to_id);
+      clearPluginPort.run(toId);
     }
     if (result.ok) {
       try {
-        insertMessage.run(body.from_id, body.to_id, body.text, now, 1, recipient.runtime);
+        insertMessage.run(fromId, toId, text, now, 1, recipient.runtime);
       } catch {}
       return { ok: true, delivered_via: "instant", latency_ms: result.latency_ms };
     }
     // Handler tried and failed → polling fallback
     try {
-      insertMessage.run(body.from_id, body.to_id, body.text, now, 0, null);
+      insertMessage.run(fromId, toId, text, now, 0, null);
     } catch {}
     return { ok: true, delivered_via: "poll_after_failure", latency_ms: result.latency_ms };
   }
 
   // No instant handler for this runtime → straight to polling
   try {
-    insertMessage.run(body.from_id, body.to_id, body.text, now, 0, null);
+    insertMessage.run(fromId, toId, text, now, 0, null);
   } catch {}
   return { ok: true, delivered_via: "poll", latency_ms: 0 };
+}
+
+async function handleSendMessage(body: SendMessageRequest): Promise<SendMessageResponse> {
+  const ctx = loadSenderContext(body.from_id);
+  const now = new Date().toISOString();
+  return deliverToOne(body.to_id, body.from_id, body.text, ctx, now);
+}
+
+async function handleSendMessageMulti(body: SendMessageMultiRequest): Promise<SendMessageMultiResponse> {
+  if (!Array.isArray(body.to_ids) || body.to_ids.length === 0) {
+    return { ok: false, results: [] };
+  }
+  const ctx = loadSenderContext(body.from_id);
+  const now = new Date().toISOString();
+
+  const results = await Promise.all(
+    body.to_ids.map(async (toId): Promise<SendMessageMultiResult> => {
+      const r = await deliverToOne(toId, body.from_id, body.text, ctx, now);
+      return { to_id: toId, ...r };
+    }),
+  );
+  return { ok: results.every((r) => r.ok), results };
 }
 
 function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
@@ -349,6 +394,8 @@ Bun.serve({
           return Response.json(handleListPeers(body as ListPeersRequest));
         case "/send-message":
           return Response.json(await handleSendMessage(body as SendMessageRequest));
+        case "/send-message-multi":
+          return Response.json(await handleSendMessageMulti(body as SendMessageMultiRequest));
         case "/poll-messages":
           return Response.json(handlePollMessages(body as PollMessagesRequest));
         case "/unregister":

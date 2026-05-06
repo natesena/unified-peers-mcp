@@ -26,6 +26,7 @@ import type {
   Peer,
   RegisterResponse,
   PollMessagesResponse,
+  SendMessageMultiResponse,
 } from "../../shared/types.ts";
 import {
   generateSummary,
@@ -131,11 +132,11 @@ const mcp = new Server(
 
 IMPORTANT: When you receive a <channel source="claude-peers" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming peer messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
 
-Read the from_id, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with their from_id.
+Read the from_id, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with to_ids: [their from_id].
 
 Available tools:
 - list_peers: Discover other peers across runtimes (scope: machine/directory/repo)
-- send_message: Send a message to another peer by ID
+- send_message: Send a message to one or more peers by ID. Pass to_ids as an array — use a single-element array for one recipient, or several IDs to fan out the same message in one call.
 - set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers)
 - check_messages: Manually check for new messages
 
@@ -164,20 +165,23 @@ const TOOLS = [
   {
     name: "send_message",
     description:
-      "Send a message to another peer by ID. Routed via the unified-peers-mcp broker — instant for runtimes with a push handler, otherwise queued for ~1s polling.",
+      "Send a message to one or more peers by ID. Pass `to_ids: [\"abc\"]` for a single peer, or `to_ids: [\"abc\", \"def\", ...]` to fan out to several peers in one call (the same message is delivered to each). Routed via the unified-peers-mcp broker — instant for runtimes with a push handler, otherwise queued for ~1s polling. Each recipient is delivered to independently; one failure does not block the others.",
     inputSchema: {
       type: "object" as const,
       properties: {
-        to_id: {
-          type: "string" as const,
-          description: "The peer ID of the target peer (from list_peers)",
+        to_ids: {
+          type: "array" as const,
+          items: { type: "string" as const },
+          minItems: 1,
+          description:
+            "Peer IDs to send to (from list_peers). Use a one-element array for a single recipient.",
         },
         message: {
           type: "string" as const,
-          description: "The message to send",
+          description: "The message to send. The same text goes to every recipient.",
         },
       },
-      required: ["to_id", "message"],
+      required: ["to_ids", "message"],
     },
   },
   {
@@ -244,34 +248,72 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case "send_message": {
-      const { to_id, message } = args as { to_id: string; message: string };
+      const { to_ids, message } = args as { to_ids: string[]; message: string };
       if (!myId) {
         return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
       }
+      if (!Array.isArray(to_ids) || to_ids.length === 0) {
+        return { content: [{ type: "text" as const, text: "to_ids must be a non-empty array of peer IDs" }], isError: true };
+      }
       try {
-        const result = await brokerFetch<{ ok: boolean; error?: string; delivered_via?: string; latency_ms?: number }>(
-          "/send-message",
-          { from_id: myId, to_id, text: message },
+        const result = await brokerFetch<SendMessageMultiResponse>(
+          "/send-message-multi",
+          { from_id: myId, to_ids, text: message },
         );
-        if (!result.ok) {
-          return { content: [{ type: "text" as const, text: `Failed to send: ${result.error}` }], isError: true };
+
+        // Single-recipient: keep the old terse output.
+        if (result.results.length === 1) {
+          const r = result.results[0];
+          if (!r) {
+            return { content: [{ type: "text" as const, text: "Broker returned empty results" }], isError: true };
+          }
+          if (!r.ok) {
+            return { content: [{ type: "text" as const, text: `Failed to send to ${r.to_id}: ${r.error ?? "unknown error"}` }], isError: true };
+          }
+          const latency = r.latency_ms != null ? ` in ${r.latency_ms}ms` : "";
+          let text: string;
+          switch (r.delivered_via) {
+            case "instant":
+              text = `Message sent to peer ${r.to_id} — delivered instantly${latency}`;
+              break;
+            case "poll_after_failure":
+              text = `Instant delivery to peer ${r.to_id} failed; queued for polling${latency} (~1s)`;
+              break;
+            case "poll":
+              text = `Peer ${r.to_id} has no instant-delivery channel; queued for polling${latency} (~1s)`;
+              break;
+            default:
+              text = `Message sent to peer ${r.to_id} (delivery method: ${r.delivered_via ?? "unknown"})`;
+          }
+          return { content: [{ type: "text" as const, text }] };
         }
-        const latency = result.latency_ms != null ? ` in ${result.latency_ms}ms` : "";
-        let text: string;
-        switch (result.delivered_via) {
-          case "instant":
-            text = `Message sent to peer ${to_id} — delivered instantly${latency}`;
-            break;
-          case "poll_after_failure":
-            text = `Instant delivery to peer ${to_id} failed; queued for polling${latency} (~1s)`;
-            break;
-          case "poll":
-            text = `Peer ${to_id} has no instant-delivery channel; queued for polling${latency} (~1s)`;
-            break;
-          default:
-            text = `Message sent to peer ${to_id} (delivery method: ${result.delivered_via ?? "unknown"})`;
-        }
-        return { content: [{ type: "text" as const, text }] };
+
+        // Multi-recipient: per-peer breakdown plus a one-line summary header.
+        const lines = result.results.map((r) => {
+          if (!r.ok) return `  ✗ ${r.to_id} — ${r.error ?? "failed"}`;
+          const latency = r.latency_ms != null ? ` (${r.latency_ms}ms)` : "";
+          let tag: string;
+          switch (r.delivered_via) {
+            case "instant":
+              tag = `instant${latency}`;
+              break;
+            case "poll_after_failure":
+              tag = `instant failed → queued${latency}`;
+              break;
+            case "poll":
+              tag = `queued${latency}`;
+              break;
+            default:
+              tag = r.delivered_via ?? "ok";
+          }
+          return `  ✓ ${r.to_id} — ${tag}`;
+        });
+        const okCount = result.results.filter((r) => r.ok).length;
+        const total = result.results.length;
+        const header = okCount === total
+          ? `Message sent to ${total} peer(s):`
+          : `Message sent to ${okCount}/${total} peer(s) (${total - okCount} failed):`;
+        return { content: [{ type: "text" as const, text: `${header}\n${lines.join("\n")}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: `Error sending message: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
       }
