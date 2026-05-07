@@ -408,10 +408,15 @@ async function main() {
   myCwd = process.cwd();
   myGitRoot = await getGitRoot(myCwd);
   const tty = getTty();
+  // Open set — anything a terminal emulator chooses to set. The broker uses
+  // this to pick a TerminalAdapter; unknown values fall back to generic OSC 2.
+  // Common values: "Ghostty", "iTerm.app", "Apple_Terminal", "WezTerm", "tmux", "vscode".
+  const terminalProgram = process.env.TERM_PROGRAM ?? null;
 
   log(`CWD: ${myCwd}`);
   log(`Git root: ${myGitRoot ?? "(none)"}`);
   log(`TTY: ${tty ?? "(unknown)"}`);
+  log(`TERM_PROGRAM: ${terminalProgram ?? "(unset)"}`);
 
   let initialSummary = "";
   const summaryPromise = (async () => {
@@ -440,6 +445,7 @@ async function main() {
     git_root: myGitRoot,
     tty,
     runtime: "claude" as const,
+    terminal_program: terminalProgram,
     summary: initialSummary,
   });
   myId = reg.id;

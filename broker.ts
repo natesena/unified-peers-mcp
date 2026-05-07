@@ -59,16 +59,19 @@ db.run(`
     tty TEXT,
     runtime TEXT NOT NULL DEFAULT 'opencode',
     plugin_port INTEGER,
+    terminal_program TEXT,
     summary TEXT NOT NULL DEFAULT '',
     registered_at TEXT NOT NULL,
     last_seen TEXT NOT NULL
   )
 `);
 
-// Backfill columns for older DBs.
+// Backfill columns for older DBs. Each ALTER throws "duplicate column" on
+// already-migrated DBs; the catch lets us re-run safely on every startup.
 for (const stmt of [
   "ALTER TABLE peers ADD COLUMN runtime TEXT NOT NULL DEFAULT 'opencode'",
   "ALTER TABLE peers ADD COLUMN plugin_port INTEGER",
+  "ALTER TABLE peers ADD COLUMN terminal_program TEXT",
 ]) {
   try { db.run(stmt); } catch { /* column already exists */ }
 }
@@ -105,8 +108,8 @@ cleanStalePeers();
 setInterval(cleanStalePeers, 30_000);
 
 const insertPeer = db.prepare(`
-  INSERT INTO peers (id, pid, cwd, git_root, tty, runtime, plugin_port, summary, registered_at, last_seen)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO peers (id, pid, cwd, git_root, tty, runtime, plugin_port, terminal_program, summary, registered_at, last_seen)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updatePluginPort = db.prepare(`UPDATE peers SET plugin_port = ? WHERE id = ?`);
@@ -172,6 +175,7 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
     body.tty,
     body.runtime,
     pluginPort,
+    body.terminal_program ?? null,
     body.summary,
     now,
     now,

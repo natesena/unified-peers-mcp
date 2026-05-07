@@ -11,6 +11,18 @@ export interface Peer {
   runtime: Runtime;
   /** opencode-specific: HTTP port of the in-app helper plugin. NULL for runtimes without one. */
   plugin_port: number | null;
+  /**
+   * Raw value of the agent process's TERM_PROGRAM env var when it registered —
+   * the open set of strings a terminal emulator may set. Common values:
+   * "Ghostty", "iTerm.app", "Apple_Terminal", "WezTerm", "tmux", "vscode".
+   * NULL when the agent was not running under an identifiable terminal.
+   *
+   * This is the *raw* string. Adapter selection happens in
+   * shared/terminals/index.ts via getAdapter(), which maps known values to
+   * specialized adapters and falls back to generic for everything else.
+   * Don't conflate this field (open set) with adapter identifiers (closed set).
+   */
+  terminal_program: string | null;
   summary: string;
   registered_at: string;
   last_seen: string;
@@ -34,6 +46,8 @@ export interface RegisterRequest {
   runtime: Runtime;
   /** Optional, runtime-specific. Currently only set by opencode peers. */
   plugin_port?: number | null;
+  /** Raw TERM_PROGRAM env value at the time of registration. See Peer.terminal_program. */
+  terminal_program?: string | null;
   summary: string;
 }
 
