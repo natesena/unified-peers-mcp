@@ -62,6 +62,7 @@ bun broker.ts                # start the daemon (auto-launched by MCP servers)
 bun cli.ts diagnose          # health check across all runtimes
 bun cli.ts peers             # list peers
 bun cli.ts send <id> <msg>   # send a message
+bun cli.ts retitle <id>      # re-assert a peer's terminal window title
 bun cli.ts kill-broker       # stop the daemon
 ```
 
@@ -90,12 +91,40 @@ The broker auto-launches on first session.
 
 See [`opencode-peers-mcp`](../opencode-peers-mcp) for opencode's MCP server and the in-app helper plugin.
 
+## Terminal title integration
+
+Each peer's host terminal window/tab title is auto-updated to reflect the peer's identity and current work — so a glance at the dock or window switcher tells you which agent is which:
+
+```
+[k3p9q2nm] working on the broker dispatch refactor
+```
+
+Format: `[<peer-id>] <summary>`. The peer ID always comes first so you can read it off the dock and pass it directly to `send_message` without a `list_peers` round-trip.
+
+The broker writes [OSC 2](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Operating-System-Commands) escape sequences directly to the peer's TTY device (`/dev/<tty>`) on registration and on every `set_summary`. Adapter selection lives in `shared/terminals/index.ts` and is keyed off the agent process's `TERM_PROGRAM` env var:
+
+| Terminal | Adapter | Notes |
+|---|---|---|
+| Ghostty | `ghostty` | Standard OSC 2 today; reserved as the seam for future Ghostty-specific extensions (OSC 9 notifications, AppleScript, the deferred flash tool). |
+| iTerm 2, Terminal.app, WezTerm, kitty, alacritty, … | `generic` | Standard OSC 2. Works on every modern terminal emulator. |
+| tmux / screen | `generic` | OSC sequences pass through to the outer terminal when `set-titles on` (tmux) is enabled. |
+| Unknown / null `TERM_PROGRAM` | `generic` | Always-safe fallback. |
+
+To add a specialized adapter for a new terminal, see the file-header comment in `shared/terminals/types.ts`.
+
+Sanitization: summaries are stripped of C0 control bytes and DEL before they reach an adapter, so a malicious summary can't smuggle in a foreign escape sequence. Titles are also truncated to 120 chars total.
+
+Caveats:
+- If the agent process is hard-killed (`kill -9`), the title may stay stale until the shell's next prompt callback reclaims it. Graceful exit clears the title.
+- Some shell prompts overwrite the title on every prompt redraw. While the agent is in the foreground (which is the normal case), the agent's title sticks.
+
 ## Environment
 
 | Variable | Default | Notes |
 |---|---|---|
 | `PEERS_PORT` | `7900` | Falls back to legacy `OPENCODE_PEERS_PORT` / `CLAUDE_PEERS_PORT` for back-compat |
 | `PEERS_DB` | `~/.peers.db` | Falls back to legacy `OPENCODE_PEERS_DB` / `CLAUDE_PEERS_DB` |
+| `UPM_TTY_DIR` | `/dev` | Directory the broker writes terminal-title escape sequences into. Override for tests or unusual sandbox setups where TTY devices live elsewhere. |
 
 ## HTTP endpoints
 
@@ -107,7 +136,9 @@ See [`opencode-peers-mcp`](../opencode-peers-mcp) for opencode's MCP server and 
 | POST | `/register` | Register a peer (must include valid `runtime`) |
 | POST | `/register-plugin` | Out-of-band registration of a runtime-specific helper port |
 | POST | `/heartbeat` | Update `last_seen` |
-| POST | `/set-summary` | Update peer's 1-2 sentence summary |
+| POST | `/set-summary` | Update peer's 1-2 sentence summary (also rewrites the host terminal's window title) |
+| POST | `/clear-title` | Reset the peer's terminal window title (called by MCP servers on graceful shutdown) |
+| POST | `/retitle` | Re-assert the peer's current title (recovery for clobbered titles; 404 on unknown peer) |
 | POST | `/list-peers` | List peers (with scope and optional `runtime` filter) |
 | POST | `/send-message` | Route a message |
 | POST | `/poll-messages` | Pull undelivered messages for a peer |

@@ -18,7 +18,10 @@ import {
   isValidRuntime,
   RUNTIMES,
 } from "./shared/runtimes.ts";
+import { formatTitle } from "./shared/terminals/format.ts";
+import { getAdapter } from "./shared/terminals/index.ts";
 import type {
+  ClearTitleRequest,
   HeartbeatRequest,
   ListPeersRequest,
   Message,
@@ -28,6 +31,7 @@ import type {
   RegisterPluginRequest,
   RegisterRequest,
   RegisterResponse,
+  RetitleRequest,
   SendMessageMultiRequest,
   SendMessageMultiResponse,
   SendMessageMultiResult,
@@ -59,16 +63,19 @@ db.run(`
     tty TEXT,
     runtime TEXT NOT NULL DEFAULT 'opencode',
     plugin_port INTEGER,
+    terminal_program TEXT,
     summary TEXT NOT NULL DEFAULT '',
     registered_at TEXT NOT NULL,
     last_seen TEXT NOT NULL
   )
 `);
 
-// Backfill columns for older DBs.
+// Backfill columns for older DBs. Each ALTER throws "duplicate column" on
+// already-migrated DBs; the catch lets us re-run safely on every startup.
 for (const stmt of [
   "ALTER TABLE peers ADD COLUMN runtime TEXT NOT NULL DEFAULT 'opencode'",
   "ALTER TABLE peers ADD COLUMN plugin_port INTEGER",
+  "ALTER TABLE peers ADD COLUMN terminal_program TEXT",
 ]) {
   try { db.run(stmt); } catch { /* column already exists */ }
 }
@@ -105,8 +112,8 @@ cleanStalePeers();
 setInterval(cleanStalePeers, 30_000);
 
 const insertPeer = db.prepare(`
-  INSERT INTO peers (id, pid, cwd, git_root, tty, runtime, plugin_port, summary, registered_at, last_seen)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO peers (id, pid, cwd, git_root, tty, runtime, plugin_port, terminal_program, summary, registered_at, last_seen)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updatePluginPort = db.prepare(`UPDATE peers SET plugin_port = ? WHERE id = ?`);
@@ -172,10 +179,22 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
     body.tty,
     body.runtime,
     pluginPort,
+    body.terminal_program ?? null,
     body.summary,
     now,
     now,
   );
+
+  // Fire-and-forget terminal title write. The adapter is selected from the
+  // peer's TERM_PROGRAM (open set) and falls back to generic OSC 2 for
+  // unknown terminals. We don't await because title hygiene is best-effort
+  // and registration must stay fast.
+  const adapter = getAdapter(body.terminal_program ?? null);
+  void adapter.writeTitle(
+    body.tty,
+    formatTitle({ id, summary: body.summary, runtime: body.runtime }),
+  );
+
   return { id };
 }
 
@@ -196,6 +215,44 @@ function handleHeartbeat(body: HeartbeatRequest): void {
 
 function handleSetSummary(body: SetSummaryRequest): void {
   updateSummary.run(body.summary, body.id);
+
+  // Fire-and-forget terminal title write reflecting the new summary.
+  // Lookup is needed because this handler doesn't receive tty/runtime/
+  // terminal_program in the request — those live on the peer row.
+  const peer = db.query("SELECT * FROM peers WHERE id = ?").get(body.id) as Peer | null;
+  if (peer) {
+    void getAdapter(peer.terminal_program).writeTitle(peer.tty, formatTitle(peer));
+  }
+}
+
+/**
+ * Reset a peer's terminal title. Called by MCP servers on graceful shutdown
+ * so the user isn't left looking at a stale agent summary.
+ *
+ * No-ops silently if the peer doesn't exist (already unregistered) or has
+ * no tty. Title hygiene is best-effort.
+ */
+function handleClearTitle(body: ClearTitleRequest): void {
+  const peer = db.query("SELECT tty, terminal_program FROM peers WHERE id = ?").get(body.id) as
+    | { tty: string | null; terminal_program: string | null }
+    | null;
+  if (peer) {
+    void getAdapter(peer.terminal_program).clearTitle(peer.tty);
+  }
+}
+
+/**
+ * Re-assert a peer's current title. Used when the title has been clobbered
+ * (long ssh session, tmux without set-titles, another tool's OSC writes).
+ *
+ * Returns 404 if the peer is unknown so the CLI can give a clear error;
+ * otherwise the title write is fire-and-forget.
+ */
+function handleRetitle(body: RetitleRequest): { ok: boolean; error?: string } {
+  const peer = db.query("SELECT * FROM peers WHERE id = ?").get(body.id) as Peer | null;
+  if (!peer) return { ok: false, error: `peer ${body.id} not found` };
+  void getAdapter(peer.terminal_program).writeTitle(peer.tty, formatTitle(peer));
+  return { ok: true };
 }
 
 function handleListPeers(body: ListPeersRequest): Peer[] {
@@ -390,6 +447,13 @@ Bun.serve({
         case "/set-summary":
           handleSetSummary(body as SetSummaryRequest);
           return Response.json({ ok: true });
+        case "/clear-title":
+          handleClearTitle(body as ClearTitleRequest);
+          return Response.json({ ok: true });
+        case "/retitle": {
+          const result = handleRetitle(body as RetitleRequest);
+          return Response.json(result, { status: result.ok ? 200 : 404 });
+        }
         case "/list-peers":
           return Response.json(handleListPeers(body as ListPeersRequest));
         case "/send-message":

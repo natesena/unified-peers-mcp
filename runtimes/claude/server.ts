@@ -408,10 +408,15 @@ async function main() {
   myCwd = process.cwd();
   myGitRoot = await getGitRoot(myCwd);
   const tty = getTty();
+  // Open set — anything a terminal emulator chooses to set. The broker uses
+  // this to pick a TerminalAdapter; unknown values fall back to generic OSC 2.
+  // Common values: "Ghostty", "iTerm.app", "Apple_Terminal", "WezTerm", "tmux", "vscode".
+  const terminalProgram = process.env.TERM_PROGRAM ?? null;
 
   log(`CWD: ${myCwd}`);
   log(`Git root: ${myGitRoot ?? "(none)"}`);
   log(`TTY: ${tty ?? "(unknown)"}`);
+  log(`TERM_PROGRAM: ${terminalProgram ?? "(unset)"}`);
 
   let initialSummary = "";
   const summaryPromise = (async () => {
@@ -440,6 +445,7 @@ async function main() {
     git_root: myGitRoot,
     tty,
     runtime: "claude" as const,
+    terminal_program: terminalProgram,
     summary: initialSummary,
   });
   myId = reg.id;
@@ -477,6 +483,17 @@ async function main() {
     clearInterval(pollTimer);
     clearInterval(heartbeatTimer);
     if (myId) {
+      // Clear the terminal title before unregistering so the next shell prompt
+      // reclaims the title cleanly. Best-effort; we don't want a failed write
+      // here to block exit, so wrap in a short timeout + ignore failures.
+      try {
+        await Promise.race([
+          brokerFetch("/clear-title", { id: myId }),
+          new Promise((r) => setTimeout(r, 500)),
+        ]);
+      } catch {
+        // Best effort — title hygiene shouldn't block shutdown.
+      }
       try {
         await brokerFetch("/unregister", { id: myId });
         log("Unregistered from broker");
