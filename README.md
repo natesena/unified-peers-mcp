@@ -135,7 +135,8 @@ Caveats:
 | POST | `/register` | Register a peer (must include valid `runtime`) |
 | POST | `/register-plugin` | Out-of-band registration of a runtime-specific helper port |
 | POST | `/heartbeat` | Update `last_seen` |
-| POST | `/set-summary` | Update peer's 1-2 sentence summary |
+| POST | `/set-summary` | Update peer's 1-2 sentence summary (also rewrites the host terminal's window title) |
+| POST | `/clear-title` | Reset the peer's terminal window title (called by MCP servers on graceful shutdown) |
 | POST | `/list-peers` | List peers (with scope and optional `runtime` filter) |
 | POST | `/send-message` | Route a message |
 | POST | `/poll-messages` | Pull undelivered messages for a peer |

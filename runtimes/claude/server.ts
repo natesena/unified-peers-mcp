@@ -483,6 +483,17 @@ async function main() {
     clearInterval(pollTimer);
     clearInterval(heartbeatTimer);
     if (myId) {
+      // Clear the terminal title before unregistering so the next shell prompt
+      // reclaims the title cleanly. Best-effort; we don't want a failed write
+      // here to block exit, so wrap in a short timeout + ignore failures.
+      try {
+        await Promise.race([
+          brokerFetch("/clear-title", { id: myId }),
+          new Promise((r) => setTimeout(r, 500)),
+        ]);
+      } catch {
+        // Best effort — title hygiene shouldn't block shutdown.
+      }
       try {
         await brokerFetch("/unregister", { id: myId });
         log("Unregistered from broker");

@@ -70,6 +70,11 @@ export interface SetSummaryRequest {
   summary: string;
 }
 
+/** Request body for POST /clear-title — resets the peer's terminal window title. */
+export interface ClearTitleRequest {
+  id: PeerId;
+}
+
 export interface ListPeersRequest {
   scope: "machine" | "directory" | "repo";
   cwd: string;

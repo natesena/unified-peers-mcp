@@ -21,6 +21,7 @@ import {
 import { formatTitle } from "./shared/terminals/format.ts";
 import { getAdapter } from "./shared/terminals/index.ts";
 import type {
+  ClearTitleRequest,
   HeartbeatRequest,
   ListPeersRequest,
   Message,
@@ -223,6 +224,22 @@ function handleSetSummary(body: SetSummaryRequest): void {
   }
 }
 
+/**
+ * Reset a peer's terminal title. Called by MCP servers on graceful shutdown
+ * so the user isn't left looking at a stale agent summary.
+ *
+ * No-ops silently if the peer doesn't exist (already unregistered) or has
+ * no tty. Title hygiene is best-effort.
+ */
+function handleClearTitle(body: ClearTitleRequest): void {
+  const peer = db.query("SELECT tty, terminal_program FROM peers WHERE id = ?").get(body.id) as
+    | { tty: string | null; terminal_program: string | null }
+    | null;
+  if (peer) {
+    void getAdapter(peer.terminal_program).clearTitle(peer.tty);
+  }
+}
+
 function handleListPeers(body: ListPeersRequest): Peer[] {
   let peers: Peer[];
   switch (body.scope) {
@@ -414,6 +431,9 @@ Bun.serve({
           return Response.json({ ok: true });
         case "/set-summary":
           handleSetSummary(body as SetSummaryRequest);
+          return Response.json({ ok: true });
+        case "/clear-title":
+          handleClearTitle(body as ClearTitleRequest);
           return Response.json({ ok: true });
         case "/list-peers":
           return Response.json(handleListPeers(body as ListPeersRequest));
