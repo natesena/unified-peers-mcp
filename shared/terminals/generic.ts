@@ -43,7 +43,16 @@ export function buildClearTitleBytes(): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Write `bytes` to /dev/<tty>. Silent-fail on any error.
+ * Directory holding TTY device files. Defaults to /dev. Can be overridden via
+ * UPM_TTY_DIR for tests (write to a temp dir instead of real character devices)
+ * or for unusual sandbox setups where TTY devices live elsewhere.
+ *
+ * Trailing slash is normalized away.
+ */
+const TTY_DEVICE_DIR = (process.env.UPM_TTY_DIR ?? "/dev").replace(/\/+$/, "");
+
+/**
+ * Write `bytes` to <TTY_DEVICE_DIR>/<tty>. Silent-fail on any error.
  *
  * The tty may have closed (terminal window quit), or the broker process may
  * not own the tty (foreign user, sandboxed environment). Title hygiene is
@@ -51,7 +60,7 @@ export function buildClearTitleBytes(): string {
  */
 async function writeToTty(tty: string, bytes: string): Promise<void> {
   try {
-    await Bun.write(`/dev/${tty}`, bytes);
+    await Bun.write(`${TTY_DEVICE_DIR}/${tty}`, bytes);
   } catch {
     // Intentional silent fail — see contract on TerminalAdapter.
   }

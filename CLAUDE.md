@@ -33,6 +33,27 @@ Default to using Bun:
 - `bun <file>` instead of `node <file>`. `bun install` instead of npm/yarn/pnpm.
 - Bun auto-loads `.env`, no `dotenv` needed.
 
+## Tests
+
+Bun's built-in test runner — `import { test, expect, describe, beforeAll, afterAll } from "bun:test"`. Run `bun test`. No additional test deps.
+
+**Layout:**
+- **Integration tests** live in `tests/*.test.ts`. They spawn the real `broker.ts` as a subprocess against a temp SQLite DB and a temp `UPM_TTY_DIR`, drive it via raw `fetch`, and assert behavior end-to-end.
+- **Unit tests for pure modules** are co-located: `*.test.ts` next to the source file (e.g. `shared/terminals/format.test.ts` next to `format.ts`). Use this for pure functions where a subprocess broker would be overkill.
+
+**Shared harness:** `tests/harness.ts` exports `spawnTestBroker`, `makeFakeTty`, `waitForBytes`, `postJson`, `registerPeer`. New integration tests should import these — don't reinvent the subprocess + temp-DB scaffolding.
+
+**Test seams:**
+- `UPM_TTY_DIR` (default `/dev`) — overridable directory for terminal-title writes. Tests point this at a temp dir so writeTitle's I/O lands in regular files we can read.
+- `PEERS_PORT` and `PEERS_DB` — already overridable; harness uses random high ports and tmp DB paths.
+
+**What we test:**
+- Pure functions exhaustively (sanitization, format, registry lookup, byte-frame builders).
+- HTTP integration end-to-end via the harness for anything with side effects (registration, summary updates, title writes).
+- We don't try to render in a real terminal — that's the human-verification step on PRs.
+
+**Tests must accompany the feature.** Don't merge a feature without its tests. Don't merge a PR without README/CLAUDE.md/AGENTS.md updates covering user-visible changes.
+
 ## When adding a runtime
 
 Read `README.md`'s "Adding a new runtime" section. Three steps, one file.

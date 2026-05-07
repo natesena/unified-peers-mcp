@@ -18,6 +18,8 @@ import {
   isValidRuntime,
   RUNTIMES,
 } from "./shared/runtimes.ts";
+import { formatTitle } from "./shared/terminals/format.ts";
+import { getAdapter } from "./shared/terminals/index.ts";
 import type {
   HeartbeatRequest,
   ListPeersRequest,
@@ -180,6 +182,17 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
     now,
     now,
   );
+
+  // Fire-and-forget terminal title write. The adapter is selected from the
+  // peer's TERM_PROGRAM (open set) and falls back to generic OSC 2 for
+  // unknown terminals. We don't await because title hygiene is best-effort
+  // and registration must stay fast.
+  const adapter = getAdapter(body.terminal_program ?? null);
+  void adapter.writeTitle(
+    body.tty,
+    formatTitle({ id, summary: body.summary, runtime: body.runtime }),
+  );
+
   return { id };
 }
 
@@ -200,6 +213,14 @@ function handleHeartbeat(body: HeartbeatRequest): void {
 
 function handleSetSummary(body: SetSummaryRequest): void {
   updateSummary.run(body.summary, body.id);
+
+  // Fire-and-forget terminal title write reflecting the new summary.
+  // Lookup is needed because this handler doesn't receive tty/runtime/
+  // terminal_program in the request — those live on the peer row.
+  const peer = db.query("SELECT * FROM peers WHERE id = ?").get(body.id) as Peer | null;
+  if (peer) {
+    void getAdapter(peer.terminal_program).writeTitle(peer.tty, formatTitle(peer));
+  }
 }
 
 function handleListPeers(body: ListPeersRequest): Peer[] {
