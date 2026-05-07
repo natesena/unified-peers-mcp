@@ -31,6 +31,7 @@ import type {
   RegisterPluginRequest,
   RegisterRequest,
   RegisterResponse,
+  RetitleRequest,
   SendMessageMultiRequest,
   SendMessageMultiResponse,
   SendMessageMultiResult,
@@ -240,6 +241,20 @@ function handleClearTitle(body: ClearTitleRequest): void {
   }
 }
 
+/**
+ * Re-assert a peer's current title. Used when the title has been clobbered
+ * (long ssh session, tmux without set-titles, another tool's OSC writes).
+ *
+ * Returns 404 if the peer is unknown so the CLI can give a clear error;
+ * otherwise the title write is fire-and-forget.
+ */
+function handleRetitle(body: RetitleRequest): { ok: boolean; error?: string } {
+  const peer = db.query("SELECT * FROM peers WHERE id = ?").get(body.id) as Peer | null;
+  if (!peer) return { ok: false, error: `peer ${body.id} not found` };
+  void getAdapter(peer.terminal_program).writeTitle(peer.tty, formatTitle(peer));
+  return { ok: true };
+}
+
 function handleListPeers(body: ListPeersRequest): Peer[] {
   let peers: Peer[];
   switch (body.scope) {
@@ -435,6 +450,10 @@ Bun.serve({
         case "/clear-title":
           handleClearTitle(body as ClearTitleRequest);
           return Response.json({ ok: true });
+        case "/retitle": {
+          const result = handleRetitle(body as RetitleRequest);
+          return Response.json(result, { status: result.ok ? 200 : 404 });
+        }
         case "/list-peers":
           return Response.json(handleListPeers(body as ListPeersRequest));
         case "/send-message":

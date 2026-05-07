@@ -75,6 +75,15 @@ export interface ClearTitleRequest {
   id: PeerId;
 }
 
+/**
+ * Request body for POST /retitle — re-asserts the peer's current title.
+ * Useful when the title has been clobbered (e.g. by a long ssh session, a
+ * tmux config without `set-titles`, or another tool's OSC writes).
+ */
+export interface RetitleRequest {
+  id: PeerId;
+}
+
 export interface ListPeersRequest {
   scope: "machine" | "directory" | "repo";
   cwd: string;

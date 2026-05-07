@@ -7,6 +7,7 @@
  *   bun cli.ts status           Brief broker + peer summary
  *   bun cli.ts peers            List all peers
  *   bun cli.ts send <id> <msg>  Send a message to a peer
+ *   bun cli.ts retitle <id>     Re-assert a peer's terminal window title
  *   bun cli.ts clean-orphans    Remove /tmp/*.port files for dead PIDs
  *   bun cli.ts kill-broker      Stop the broker daemon
  */
@@ -377,6 +378,24 @@ switch (cmd) {
     break;
   }
 
+  case "retitle": {
+    const id = process.argv[3];
+    if (!id) {
+      console.error("Usage: bun cli.ts retitle <peer-id>");
+      process.exit(1);
+    }
+    try {
+      await brokerFetch<{ ok: boolean }>("/retitle", { id });
+      console.log(`${OK} Title re-asserted for ${id}`);
+    } catch (e) {
+      // brokerFetch throws on non-2xx; the broker returns 404 with a helpful
+      // body for unknown peer IDs, so surface that to the user.
+      console.error(`${FAIL} ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
+    break;
+  }
+
   case "kill-broker": {
     try {
       const health = await brokerFetch<{ status: string; peers: number }>("/health");
@@ -408,6 +427,7 @@ Usage:
   bun cli.ts status           Brief broker + peer summary
   bun cli.ts peers            List all peers
   bun cli.ts send <id> <msg>  Send a message to a peer
+  bun cli.ts retitle <id>     Re-assert a peer's terminal window title
   bun cli.ts clean-orphans    Remove /tmp/*.port files for dead PIDs
   bun cli.ts kill-broker      Stop the broker daemon
 

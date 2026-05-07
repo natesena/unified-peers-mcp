@@ -62,6 +62,7 @@ bun broker.ts                # start the daemon (auto-launched by MCP servers)
 bun cli.ts diagnose          # health check across all runtimes
 bun cli.ts peers             # list peers
 bun cli.ts send <id> <msg>   # send a message
+bun cli.ts retitle <id>      # re-assert a peer's terminal window title
 bun cli.ts kill-broker       # stop the daemon
 ```
 
@@ -137,6 +138,7 @@ Caveats:
 | POST | `/heartbeat` | Update `last_seen` |
 | POST | `/set-summary` | Update peer's 1-2 sentence summary (also rewrites the host terminal's window title) |
 | POST | `/clear-title` | Reset the peer's terminal window title (called by MCP servers on graceful shutdown) |
+| POST | `/retitle` | Re-assert the peer's current title (recovery for clobbered titles; 404 on unknown peer) |
 | POST | `/list-peers` | List peers (with scope and optional `runtime` filter) |
 | POST | `/send-message` | Route a message |
 | POST | `/poll-messages` | Pull undelivered messages for a peer |
