@@ -91,6 +91,21 @@ The broker auto-launches on first session.
 
 See [`opencode-peers-mcp`](../opencode-peers-mcp) for opencode's MCP server and the in-app helper plugin.
 
+## Delivery semantics
+
+For each `runtime` value the broker has a different delivery contract. The relevant detail when reasoning about message loss:
+
+| Runtime | Instant path | Poll fallback | Why |
+|---|---|---|---|
+| `claude` | (none — no broker-initiated push) | always on | Claude Code only listens to its own MCP server's stdio. The MCP server polls every ~1s and pushes via `mcp.notification`. |
+| `opencode` | broker POSTs `/message` to the in-app plugin's HTTP port; plugin appends + submits to the TUI | **always on** | The plugin's `appendPrompt` + `submitPrompt` calls fire opencode `Bus` events. Those events are dropped silently when the session is mid-generation (TUI input disabled). The poll path is the only reliable in-context delivery channel during that window. |
+
+For opencode specifically, the broker keeps every message on the poll queue (`delivered=0`) even when the instant POST returns 200, so the receiver's MCP server picks it up via `/poll-messages` within ~1s and surfaces it to the LLM via the `check_messages` tool. The poll handler marks the message delivered on first drain, so this does not cause re-delivery.
+
+A consequence is that an idle opencode recipient may see the same peer message twice — once as a TUI user prompt (via instant) and once via `check_messages` (via poll). The `check_messages` tool description tells the LLM to dedupe by sender + text. This is intentional: the duplicate cost is a one-line "already received" reply; the cost of dropping silently during mid-generation is a hung conversation.
+
+If you add a new runtime whose own MCP server already pushes notifications synchronously, register it without an instant handler and the broker will route through the poll path generically. Set the `delivered` flag check in `broker.ts:deliverToOne` to mirror this if you instead need the same dual-path treatment opencode gets.
+
 ## Terminal title integration
 
 Each peer's host terminal window/tab title is auto-updated to reflect the peer's identity and current work — so a glance at the dock or window switcher tells you which agent is which:

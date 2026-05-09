@@ -332,8 +332,18 @@ async function deliverToOne(
       clearPluginPort.run(toId);
     }
     if (result.ok) {
+      // For opencode, "instant" delivery only confirms the plugin's HTTP
+      // endpoint returned 200 — NOT that the LLM saw the message. The TUI
+      // appendPrompt/submitPrompt bus events are dropped silently while the
+      // session is mid-generation. Keep the poll path open (delivered=0) so
+      // the receiver's MCP server picks the message up via /poll-messages and
+      // surfaces it to the LLM via the check_messages tool. The poll handler
+      // marks delivered=1 on first drain (handlePollMessages, below), so this
+      // doesn't cause re-delivery. Other runtimes (claude) push via
+      // mcp.notification synchronously and don't need the fallback. See upm-uab.
+      const markedDelivered = recipient.runtime === "opencode" ? 0 : 1;
       try {
-        insertMessage.run(fromId, toId, text, now, 1, recipient.runtime);
+        insertMessage.run(fromId, toId, text, now, markedDelivered, recipient.runtime);
       } catch {}
       return { ok: true, delivered_via: "instant", latency_ms: result.latency_ms };
     }

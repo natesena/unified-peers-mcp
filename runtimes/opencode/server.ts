@@ -228,7 +228,13 @@ const TOOLS = [
   {
     name: "check_messages",
     description:
-      "Check for new messages from other peers. You MUST call this regularly — after every task completion and before starting new work. Peer messages are queued until you check.",
+      "Check for new messages from other peers. Call this regularly: " +
+      "between tool calls during long-running tasks, after every task completion, " +
+      "and before starting new work. Peer messages are queued until you check. " +
+      "Note: the same peer message may also appear as a user prompt in your " +
+      "conversation (the plugin pushes to your TUI when you are idle). If you " +
+      "see a duplicate from the same sender with the same text, treat it as " +
+      "already received and reply once.",
     inputSchema: {
       type: "object" as const,
       properties: {},

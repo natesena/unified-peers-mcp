@@ -15,8 +15,16 @@ Cross-runtime peer messaging broker. Owns one localhost daemon + one CLI shared 
 
 In `shared/runtimes.ts`. Each handler runs in the broker process when a message is sent to a peer of that runtime:
 
-- `opencode` — POSTs to the in-app helper plugin's HTTP endpoint (`/message`). Helper lives in `~/.config/opencode/plugins/opencode-peers.ts` (managed by `opencode-peers-mcp`).
+- `opencode` — POSTs to the in-app helper plugin's HTTP endpoint (`/message`). Helper lives in `~/.config/opencode/plugins/opencode-peers.ts` (managed by `opencode-peers-mcp`). The opencode runtime's MCP server (in `opencode-peers-mcp`) ALSO polls `/poll-messages` every ~1s and surfaces results via the `check_messages` tool.
 - `claude` — *no instant handler*; relies on the receiver's MCP server polling the broker every ~1s and pushing via `mcp.notification("notifications/claude/channel", …)`.
+
+### opencode dual-path delivery (upm-uab)
+
+The opencode handler returning HTTP 200 only confirms the plugin received the message — it does NOT confirm the LLM saw it. The plugin calls `client.tui.appendPrompt` + `submitPrompt`, which fire opencode `Bus` events that are dropped silently when the session is mid-generation (TUI input disabled).
+
+To prevent silent message loss in that window, `broker.ts:deliverToOne` keeps every opencode message on the poll queue (`delivered=0`) **even when the instant POST succeeds**. The poll handler marks `delivered=1` on first drain, so this does NOT cause re-delivery. Net effect: an idle recipient may see the same message twice (once via TUI, once via `check_messages`); a busy recipient gets the message reliably via the poll path within ~1s. The `check_messages` tool description tells the LLM to dedupe by sender + text.
+
+If you add a runtime whose MCP server pushes synchronously and reliably (like `claude` does via `mcp.notification`), use the default `delivered=1` branch — the dual-path treatment is opencode-specific because of the TUI bus drop. Test coverage: `tests/dual-path-delivery.test.ts`.
 
 ## Sibling repo
 
