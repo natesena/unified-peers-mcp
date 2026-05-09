@@ -7,11 +7,12 @@ What lives here:
 - The **broker daemon** (`broker.ts`) — singleton on `localhost:7900` + SQLite at `~/.peers.db`
 - The **CLI** (`cli.ts`) — diagnose / status / send / clean-orphans
 - The **runtime registry** (`shared/runtimes.ts`) — closed enum + per-runtime instant-delivery handler registry. **The only file you edit to add a new runtime.**
-- The **claude runtime's MCP server** (`runtimes/claude/server.ts`) — small enough to live here
+- The **claude runtime's MCP server** (`runtimes/claude/server.ts`)
+- The **opencode runtime's MCP server** (`runtimes/opencode/server.ts`)
 
 What lives elsewhere:
 
-- The **opencode runtime's MCP server + in-app helper plugin** lives in [`opencode-peers-mcp`](../opencode-peers-mcp), because the helper plugin is real opencode-specific code that hooks into opencode's plugin system.
+- The **opencode in-app helper plugin** lives in [`opencode-peers-mcp`](../opencode-peers-mcp) — it's real opencode-specific code that hooks into opencode's plugin system for instant TUI delivery.
 
 ## What it is
 
@@ -89,7 +90,21 @@ The broker auto-launches on first session.
 
 ## Wiring up opencode
 
-See [`opencode-peers-mcp`](../opencode-peers-mcp) for opencode's MCP server and the in-app helper plugin.
+Register the opencode runtime's MCP server in your opencode config (`~/.config/opencode/opencode.jsonc`):
+
+```jsonc
+{
+  "mcp": {
+    "unified-peers": {
+      "type": "local",
+      "command": ["bun", "/Users/<you>/Documents/code/unified-peers-mcp/runtimes/opencode/server.ts"],
+      "enabled": true
+    }
+  }
+}
+```
+
+For instant TUI delivery, also install the in-app helper plugin from [`opencode-peers-mcp`](../opencode-peers-mcp). Without it, messages still arrive via polling (~1s delay).
 
 ## Delivery semantics
 
