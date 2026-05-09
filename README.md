@@ -10,9 +10,9 @@ What lives here:
 - The **claude runtime's MCP server** (`runtimes/claude/server.ts`)
 - The **opencode runtime's MCP server** (`runtimes/opencode/server.ts`)
 
-What lives elsewhere:
+What also lives here:
 
-- The **opencode in-app helper plugin** lives in [`opencode-peers-mcp`](../opencode-peers-mcp) — it's real opencode-specific code that hooks into opencode's plugin system for instant TUI delivery.
+- The **opencode in-app helper plugin** (`plugins/opencode-peers.ts`) — hooks into opencode's plugin system for instant TUI delivery. Copy or symlink to `~/.config/opencode/plugins/`.
 
 ## What it is
 
@@ -104,7 +104,14 @@ Register the opencode runtime's MCP server in your opencode config (`~/.config/o
 }
 ```
 
-For instant TUI delivery, also install the in-app helper plugin from [`opencode-peers-mcp`](../opencode-peers-mcp). Without it, messages still arrive via polling (~1s delay).
+For instant TUI delivery, copy the in-app helper plugin to opencode's plugin directory:
+
+```sh
+mkdir -p ~/.config/opencode/plugins
+cp plugins/opencode-peers.ts ~/.config/opencode/plugins/
+```
+
+Without it, messages still arrive via polling (~1s delay).
 
 ## Delivery semantics
 
