@@ -516,6 +516,8 @@ async function main() {
   myId = reg.id;
   log(`Registered as peer ${myId}`);
 
+  (mcp as any)._instructions = `Your peer ID is ${myId}.\n\n` + (mcp as any)._instructions;
+
   if (!initialSummary) {
     summaryPromise.then(async () => {
       if (initialSummary && myId) {
