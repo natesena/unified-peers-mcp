@@ -105,7 +105,7 @@ export const OpenencodePeersPlugin: Plugin = async ({ client }) => {
         from_git_root?: string;
       };
       try {
-        body = await req.json();
+        body = (await req.json()) as typeof body;
       } catch {
         return Response.json({ ok: false, error: "invalid json" }, { status: 400 });
       }

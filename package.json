@@ -10,6 +10,7 @@
     "test": "bun test"
   },
   "devDependencies": {
+    "@opencode-ai/plugin": "^1.14.48",
     "@types/bun": "latest"
   },
   "peerDependencies": {
