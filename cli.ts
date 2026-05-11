@@ -3,13 +3,15 @@
  * unified-peers-mcp CLI
  *
  * Usage:
- *   bun cli.ts diagnose         Cross-runtime health check (recommended)
- *   bun cli.ts status           Brief broker + peer summary
- *   bun cli.ts peers            List all peers
- *   bun cli.ts send <id> <msg>  Send a message to a peer
- *   bun cli.ts retitle <id>     Re-assert a peer's terminal window title
- *   bun cli.ts clean-orphans    Remove /tmp/*.port files for dead PIDs
- *   bun cli.ts kill-broker      Stop the broker daemon
+ *   bun cli.ts diagnose                          Cross-runtime health check (recommended)
+ *   bun cli.ts status                            Brief broker + peer summary
+ *   bun cli.ts peers                             List all peers
+ *   bun cli.ts send <id> <msg>                   Send a message to a peer
+ *   bun cli.ts retitle <id>                      Re-assert a peer's terminal window title
+ *   bun cli.ts reset-context <compact|clear> <id> [id …]
+ *                                                Compact or clear a peer's LLM context
+ *   bun cli.ts clean-orphans                     Remove /tmp/*.port files for dead PIDs
+ *   bun cli.ts kill-broker                       Stop the broker daemon
  */
 
 import { RUNTIMES, type Runtime } from "./shared/runtimes.ts";
@@ -396,6 +398,37 @@ switch (cmd) {
     break;
   }
 
+  case "reset-context": {
+    const mode = process.argv[3];
+    const ids = process.argv.slice(4);
+    if ((mode !== "compact" && mode !== "clear") || ids.length === 0) {
+      console.error("Usage: bun cli.ts reset-context <compact|clear> <peer-id> [peer-id ...]");
+      process.exit(1);
+    }
+    try {
+      const result = await brokerFetch<{
+        ok: boolean;
+        mode: string;
+        results: Array<{ to_id: string; ok: boolean; error?: string; latency_ms?: number }>;
+      }>("/reset-context", { ids, mode });
+      let anyFail = false;
+      for (const r of result.results) {
+        if (r.ok) {
+          const latency = r.latency_ms != null ? ` (${r.latency_ms}ms)` : "";
+          console.log(`${OK} ${r.to_id} — ${mode}${latency}`);
+        } else {
+          anyFail = true;
+          console.log(`${FAIL} ${r.to_id} — ${r.error ?? "failed"}`);
+        }
+      }
+      if (anyFail) process.exit(1);
+    } catch (e) {
+      console.error(`${FAIL} ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
+    break;
+  }
+
   case "kill-broker": {
     try {
       const health = await brokerFetch<{ status: string; peers: number }>("/health");
@@ -423,13 +456,16 @@ switch (cmd) {
     console.log(`unified-peers-mcp CLI
 
 Usage:
-  bun cli.ts diagnose         Cross-runtime health check (recommended first stop)
-  bun cli.ts status           Brief broker + peer summary
-  bun cli.ts peers            List all peers
-  bun cli.ts send <id> <msg>  Send a message to a peer
-  bun cli.ts retitle <id>     Re-assert a peer's terminal window title
-  bun cli.ts clean-orphans    Remove /tmp/*.port files for dead PIDs
-  bun cli.ts kill-broker      Stop the broker daemon
+  bun cli.ts diagnose                          Cross-runtime health check (recommended first stop)
+  bun cli.ts status                            Brief broker + peer summary
+  bun cli.ts peers                             List all peers
+  bun cli.ts send <id> <msg>                   Send a message to a peer
+  bun cli.ts retitle <id>                      Re-assert a peer's terminal window title
+  bun cli.ts reset-context <compact|clear> <id> [id …]
+                                               Compact or clear a peer's LLM context
+                                               (opencode targets only; claude targets return per-slot error)
+  bun cli.ts clean-orphans                     Remove /tmp/*.port files for dead PIDs
+  bun cli.ts kill-broker                       Stop the broker daemon
 
 Runtimes: ${RUNTIMES.join(", ")}`);
 }

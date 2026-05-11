@@ -18,6 +18,8 @@ In `shared/runtimes.ts`. Each handler runs in the broker process when a message 
 - `opencode` — POSTs to the in-app helper plugin's HTTP endpoint (`/message`). Helper lives in `~/.config/opencode/plugins/opencode-peers.ts` (managed by `opencode-peers-mcp`). The opencode runtime's MCP server (in `opencode-peers-mcp`) ALSO polls `/poll-messages` every ~1s and surfaces results via the `check_messages` tool.
 - `claude` — *no instant handler*; relies on the receiver's MCP server polling the broker every ~1s and pushing via `mcp.notification("notifications/claude/channel", …)`.
 
+There's a parallel `Reset` registry in the same file (`registerReset` / `getReset`) used by the broker's `/reset-context` route. Only `opencode` has a reset handler — it POSTs to the plugin's `/reset` endpoint, which runs `client.tui.executeCommand({ command: "session.compact" | "session.new" })` via the opencode SDK. Claude targets fall through to a per-slot `unsupported` error because the claude MCP server can't invoke slash commands against its host TUI. See `tests/reset-context.test.ts` for end-to-end coverage and the README's "Remote context reset" section for the user-facing tool surface.
+
 ### opencode dual-path delivery (upm-uab)
 
 The opencode handler returning HTTP 200 only confirms the plugin received the message — it does NOT confirm the LLM saw it. The plugin calls `client.tui.appendPrompt` + `submitPrompt`, which fire opencode `Bus` events that are dropped silently when the session is mid-generation (TUI input disabled).

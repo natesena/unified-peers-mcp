@@ -15,6 +15,7 @@
 import { Database } from "bun:sqlite";
 import {
   getInstantDelivery,
+  getReset,
   isValidRuntime,
   RUNTIMES,
 } from "./shared/runtimes.ts";
@@ -31,6 +32,9 @@ import type {
   RegisterPluginRequest,
   RegisterRequest,
   RegisterResponse,
+  ResetContextRequest,
+  ResetContextResponse,
+  ResetContextResult,
   RetitleRequest,
   SendMessageMultiRequest,
   SendMessageMultiResponse,
@@ -389,6 +393,43 @@ function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
   return { messages };
 }
 
+/**
+ * Reset (compact or clear) the LLM context of each peer in `body.ids`.
+ *
+ * For each target, looks up the peer's runtime and dispatches via
+ * `getReset(runtime)`. Targets whose runtime has no reset handler (claude,
+ * unknown) get a per-slot "unsupported" error rather than failing the whole
+ * batch — one bad target doesn't poison the others. Fans out in parallel
+ * (`Promise.all`) since each call is an independent local-HTTP POST.
+ *
+ * A peer can target itself by including its own ID in `body.ids` — the
+ * broker doesn't special-case self-reset; the round-trip is local HTTP.
+ */
+async function handleResetContext(body: ResetContextRequest): Promise<ResetContextResponse> {
+  const mode = body.mode;
+  if (mode !== "compact" && mode !== "clear") {
+    return { ok: false, mode, results: [] };
+  }
+  if (!Array.isArray(body.ids) || body.ids.length === 0) {
+    return { ok: false, mode, results: [] };
+  }
+
+  const results = await Promise.all(
+    body.ids.map(async (toId): Promise<ResetContextResult> => {
+      const peer = db.query("SELECT * FROM peers WHERE id = ?").get(toId) as Peer | null;
+      if (!peer) return { to_id: toId, ok: false, error: `Peer ${toId} not found` };
+
+      const handler = getReset(peer.runtime);
+      if (!handler) {
+        return { to_id: toId, ok: false, error: `reset unsupported for runtime=${peer.runtime}` };
+      }
+      const r = await handler(peer, mode);
+      return { to_id: toId, ok: r.ok, error: r.error, latency_ms: r.latency_ms };
+    }),
+  );
+  return { ok: results.every((r) => r.ok), mode, results };
+}
+
 function handleUnregister(body: { id: string }): void {
   deletePeer.run(body.id);
 }
@@ -470,6 +511,8 @@ Bun.serve({
           return Response.json(await handleSendMessage(body as SendMessageRequest));
         case "/send-message-multi":
           return Response.json(await handleSendMessageMulti(body as SendMessageMultiRequest));
+        case "/reset-context":
+          return Response.json(await handleResetContext(body as ResetContextRequest));
         case "/poll-messages":
           return Response.json(handlePollMessages(body as PollMessagesRequest));
         case "/unregister":

@@ -31,6 +31,7 @@ import type {
   Peer,
   RegisterResponse,
   PollMessagesResponse,
+  ResetContextResponse,
   SendMessageMultiResponse,
 } from "../../shared/types.ts";
 import {
@@ -144,6 +145,7 @@ Available tools:
 - send_message: Send a message to one or more peers by ID. Pass to_ids as an array — use a single-element array for one recipient, or several IDs to fan out the same message in one call.
 - set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers)
 - check_messages: Manually check for new messages
+- reset_context: Compact or clear a peer's LLM context (opencode targets only — claude peers can't be reset this way). Pass mode: "compact" to summarize and preserve, "clear" to start fresh. Omit to_ids to reset yourself; pass an array to reset other peers (orchestrator pattern).
 
 When you start, proactively call set_summary to describe what you're working on. This helps other instances understand your context.`,
   }
@@ -211,6 +213,32 @@ const TOOLS = [
     inputSchema: {
       type: "object" as const,
       properties: {},
+    },
+  },
+  {
+    name: "reset_context",
+    description:
+      "Compact or clear a peer's LLM context. Two semantically distinct modes:\n" +
+      "  - \"compact\": summarize prior turns in place (lossy compression — references still resolve through the summary)\n" +
+      "  - \"clear\":   discard the existing context entirely (start fresh; nothing carries over)\n\n" +
+      "Pass `to_ids` to reset other peers (orchestrator pattern: \"I delegated to B, now free B's context\"). " +
+      "Omit `to_ids` (or pass an empty array) to reset yourself when a long task is done and the next one is unrelated. " +
+      "Only opencode peers can be reset; claude targets return an \"unsupported\" error per slot — including yourself if you are claude.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        mode: {
+          type: "string" as const,
+          enum: ["compact", "clear"],
+          description: "\"compact\" preserves the session with a summary; \"clear\" starts a new session with nothing carried over.",
+        },
+        to_ids: {
+          type: "array" as const,
+          items: { type: "string" as const },
+          description: "Peer IDs to reset (from list_peers). Omit or pass [] to target yourself.",
+        },
+      },
+      required: ["mode"],
     },
   },
 ];
@@ -350,6 +378,51 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: "text" as const, text: `${result.messages.length} new message(s):\n\n${lines.join("\n\n---\n\n")}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: `Error checking messages: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
+      }
+    }
+
+    case "reset_context": {
+      const { mode, to_ids } = args as { mode: string; to_ids?: string[] };
+      if (!myId) {
+        return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
+      }
+      if (mode !== "compact" && mode !== "clear") {
+        return { content: [{ type: "text" as const, text: `mode must be "compact" or "clear", got ${JSON.stringify(mode)}` }], isError: true };
+      }
+      // Empty/missing to_ids → reset self. Routes through the broker exactly
+      // like the orchestrator case; the broker doesn't special-case self.
+      const ids = Array.isArray(to_ids) && to_ids.length > 0 ? to_ids : [myId];
+      try {
+        const result = await brokerFetch<ResetContextResponse>("/reset-context", { ids, mode });
+
+        // Single target → terse one-line result.
+        if (result.results.length === 1) {
+          const r = result.results[0];
+          if (!r) {
+            return { content: [{ type: "text" as const, text: "Broker returned empty results" }], isError: true };
+          }
+          if (!r.ok) {
+            return { content: [{ type: "text" as const, text: `reset_context (${mode}) failed for ${r.to_id}: ${r.error ?? "unknown error"}` }], isError: true };
+          }
+          const latency = r.latency_ms != null ? ` in ${r.latency_ms}ms` : "";
+          const selfTag = r.to_id === myId ? " (self)" : "";
+          return { content: [{ type: "text" as const, text: `reset_context (${mode}) succeeded for ${r.to_id}${selfTag}${latency}` }] };
+        }
+
+        // Multi target → per-peer breakdown plus a summary header.
+        const lines = result.results.map((r) => {
+          if (!r.ok) return `  ✗ ${r.to_id} — ${r.error ?? "failed"}`;
+          const latency = r.latency_ms != null ? ` (${r.latency_ms}ms)` : "";
+          return `  ✓ ${r.to_id} — ok${latency}`;
+        });
+        const okCount = result.results.filter((r) => r.ok).length;
+        const total = result.results.length;
+        const header = okCount === total
+          ? `reset_context (${mode}) succeeded for ${total} peer(s):`
+          : `reset_context (${mode}) succeeded for ${okCount}/${total} peer(s) (${total - okCount} failed):`;
+        return { content: [{ type: "text" as const, text: `${header}\n${lines.join("\n")}` }], isError: okCount !== total };
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: `Error resetting context: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
       }
     }
 

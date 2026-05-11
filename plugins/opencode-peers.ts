@@ -7,6 +7,9 @@ const startedAt = Date.now();
 let lastDeliveryAt: string | null = null;
 let lastDeliveryOk: boolean | null = null;
 let lastDeliveryError: string | null = null;
+let lastResetAt: string | null = null;
+let lastResetOk: boolean | null = null;
+let lastResetError: string | null = null;
 
 export const OpenencodePeersPlugin: Plugin = async ({ client }) => {
   const server = Bun.serve({
@@ -38,6 +41,9 @@ export const OpenencodePeersPlugin: Plugin = async ({ client }) => {
             last_delivery_at: lastDeliveryAt,
             last_delivery_ok: lastDeliveryOk,
             last_delivery_error: lastDeliveryError,
+            last_reset_at: lastResetAt,
+            last_reset_ok: lastResetOk,
+            last_reset_error: lastResetError,
           });
         }
         return Response.json({
@@ -47,7 +53,44 @@ export const OpenencodePeersPlugin: Plugin = async ({ client }) => {
           last_delivery_at: lastDeliveryAt,
           last_delivery_ok: lastDeliveryOk,
           last_delivery_error: lastDeliveryError,
+          last_reset_at: lastResetAt,
+          last_reset_ok: lastResetOk,
+          last_reset_error: lastResetError,
         });
+      }
+
+      // POST /reset — runs the corresponding TUI slash command via the
+      // opencode SDK. Called by broker /reset-context when this peer is the
+      // target (whether the request came from another peer or from self).
+      //
+      //   mode: "compact" → session.compact (preserves session, summarizes)
+      //   mode: "clear"   → session.new     (full reset; opencode has no
+      //                     session.clear, so session.new is what we use)
+      if (req.method === "POST" && url.pathname === "/reset") {
+        let resetBody: { mode?: string };
+        try {
+          resetBody = (await req.json()) as { mode?: string };
+        } catch {
+          return Response.json({ ok: false, error: "invalid json" }, { status: 400 });
+        }
+        const mode = resetBody.mode;
+        if (mode !== "compact" && mode !== "clear") {
+          return Response.json({ ok: false, error: `invalid mode: ${mode}` }, { status: 400 });
+        }
+        const command = mode === "compact" ? "session.compact" : "session.new";
+        try {
+          await client.tui.executeCommand({ body: { command } });
+        } catch (e) {
+          const err = e instanceof Error ? e.message : String(e);
+          lastResetAt = new Date().toISOString();
+          lastResetOk = false;
+          lastResetError = err;
+          return Response.json({ ok: false, error: err }, { status: 500 });
+        }
+        lastResetAt = new Date().toISOString();
+        lastResetOk = true;
+        lastResetError = null;
+        return Response.json({ ok: true, mode });
       }
 
       if (req.method !== "POST" || url.pathname !== "/message") {

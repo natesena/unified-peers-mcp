@@ -59,12 +59,13 @@ That's it. List, scope filtering, diagnostics, and the per-peer message log all 
 ## Running
 
 ```sh
-bun broker.ts                # start the daemon (auto-launched by MCP servers)
-bun cli.ts diagnose          # health check across all runtimes
-bun cli.ts peers             # list peers
-bun cli.ts send <id> <msg>   # send a message
-bun cli.ts retitle <id>      # re-assert a peer's terminal window title
-bun cli.ts kill-broker       # stop the daemon
+bun broker.ts                                        # start the daemon (auto-launched by MCP servers)
+bun cli.ts diagnose                                  # health check across all runtimes
+bun cli.ts peers                                     # list peers
+bun cli.ts send <id> <msg>                           # send a message
+bun cli.ts retitle <id>                              # re-assert a peer's terminal window title
+bun cli.ts reset-context <compact|clear> <id> [id …] # compact or clear a peer's LLM context
+bun cli.ts kill-broker                               # stop the daemon
 ```
 
 ## Wiring up Claude Code
@@ -128,6 +129,31 @@ A consequence is that an idle opencode recipient may see the same peer message t
 
 If you add a new runtime whose own MCP server already pushes notifications synchronously, register it without an instant handler and the broker will route through the poll path generically. Set the `delivered` flag check in `broker.ts:deliverToOne` to mirror this if you instead need the same dual-path treatment opencode gets.
 
+## Remote context reset (`reset_context`)
+
+Peers can ask each other — or themselves — to compact or clear their LLM context. The `reset_context` MCP tool is exposed by both runtimes' MCP servers, with two semantically distinct modes:
+
+| Mode | Effect | SDK call (opencode) |
+|---|---|---|
+| `compact` | Summarize prior turns in place. Lossy compression; references still resolve through the summary. | `client.tui.executeCommand({ command: "session.compact" })` |
+| `clear` | Discard the existing context entirely (start a new session). Nothing carries over. | `client.tui.executeCommand({ command: "session.new" })` |
+
+Two patterns:
+
+- **Orchestrator → delegate:** `reset_context({ to_ids: ["abc123"], mode: "compact" })` — caller A frees delegate B's context once delegation is done.
+- **Delegate self-reset:** `reset_context({ mode: "clear" })` — omit `to_ids` (or pass `[]`) to target yourself when the next task is unrelated to anything in the current session.
+
+`to_ids` is a fan-out array shaped like `send_message`'s — pass a single ID or several, each is dispatched in parallel.
+
+**Constraint: opencode targets only.** Claude peers have no SDK affordance to run slash commands against their host TUI, so a claude target returns a per-slot `reset unsupported for runtime=claude` error rather than silently no-oping. The batch keeps going for other targets; only the failing slot reports `ok: false`.
+
+CLI form (no peer identity, so at least one id is required):
+
+```sh
+bun cli.ts reset-context compact <opencode-peer-id>
+bun cli.ts reset-context clear <id1> <id2>          # fan-out
+```
+
 ## Terminal title integration
 
 Each peer's host terminal window/tab title is auto-updated to reflect the peer's identity and current work — so a glance at the dock or window switcher tells you which agent is which:
@@ -178,6 +204,8 @@ Caveats:
 | POST | `/retitle` | Re-assert the peer's current title (recovery for clobbered titles; 404 on unknown peer) |
 | POST | `/list-peers` | List peers (with scope and optional `runtime` filter) |
 | POST | `/send-message` | Route a message |
+| POST | `/send-message-multi` | Route a message to multiple peers in one call |
+| POST | `/reset-context` | Compact or clear the LLM context of one or more peers (opencode targets only) |
 | POST | `/poll-messages` | Pull undelivered messages for a peer |
 | POST | `/unregister` | Remove a peer |
 

@@ -135,3 +135,34 @@ export interface PollMessagesRequest {
 export interface PollMessagesResponse {
   messages: Message[];
 }
+
+/**
+ * Context reset modes. Semantically distinct:
+ *   - "compact" — preserve session, summarize prior turns (lossy compression).
+ *     References to earlier work still resolve through the summary.
+ *   - "clear"   — fully discard the existing context (start a new session).
+ *     Nothing carries over. Use when the new task is unrelated to anything
+ *     that came before.
+ */
+export type ResetMode = "compact" | "clear";
+
+export interface ResetContextRequest {
+  /** Peer IDs whose context to reset. A peer can target itself. */
+  ids: PeerId[];
+  mode: ResetMode;
+}
+
+export interface ResetContextResult {
+  to_id: PeerId;
+  ok: boolean;
+  error?: string;
+  latency_ms?: number;
+}
+
+export interface ResetContextResponse {
+  /** True iff every recipient in `results` has ok=true. */
+  ok: boolean;
+  mode: ResetMode;
+  /** One entry per requested id, in input order. */
+  results: ResetContextResult[];
+}
