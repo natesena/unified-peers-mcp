@@ -6,6 +6,18 @@ describe("getAdapter", () => {
     expect(getAdapter("Ghostty").name).toBe("ghostty");
   });
 
+  // Real Ghostty installs vary in case (some set "ghostty", others "Ghostty").
+  // Bug upm-zg5: case-sensitive lookup silently dropped lowercase users onto
+  // the generic adapter so per-team background tinting was a no-op for them.
+  test("lowercase 'ghostty' → ghostty adapter (case-insensitive lookup)", () => {
+    expect(getAdapter("ghostty").name).toBe("ghostty");
+  });
+
+  test("mixed-case 'GHOSTTY' / 'gHoStTy' → ghostty adapter", () => {
+    expect(getAdapter("GHOSTTY").name).toBe("ghostty");
+    expect(getAdapter("gHoStTy").name).toBe("ghostty");
+  });
+
   test("null → generic", () => {
     expect(getAdapter(null).name).toBe("generic");
   });

@@ -40,21 +40,31 @@ const ADAPTERS_BY_TERM_PROGRAM: Record<KnownTerminalProgram, TerminalAdapter> = 
 };
 
 /**
+ * Lowercased lookup table for case-insensitive matching. TERM_PROGRAM is
+ * conventionally a brand name but real installs are inconsistent — Ghostty
+ * sets `ghostty` (lowercase) on some versions, `Ghostty` on others, and
+ * Apple's terminal sets `Apple_Terminal`. We don't want a one-character case
+ * difference to silently dump users onto the generic adapter (the bug
+ * tracked in upm-zg5).
+ */
+const ADAPTERS_LOWERCASED: Record<string, TerminalAdapter> = Object.fromEntries(
+  Object.entries(ADAPTERS_BY_TERM_PROGRAM).map(([k, v]) => [k.toLowerCase(), v]),
+);
+
+/**
  * Pick the adapter for a peer's terminal_program value.
  *
  * `terminalProgram` is the raw TERM_PROGRAM string captured at registration —
  * could be anything a terminal emulator chooses to set, or null if the peer
- * registered without one. Returns the specialized adapter if we ship one,
- * otherwise the generic OSC 2 adapter.
+ * registered without one. Lookup is case-insensitive (see ADAPTERS_LOWERCASED
+ * comment). Returns the specialized adapter if we ship one, otherwise the
+ * generic OSC 2 adapter.
  *
  * Never returns null — there is always a working fallback.
  */
 export function getAdapter(terminalProgram: string | null | undefined): TerminalAdapter {
   if (!terminalProgram) return generic;
-  const adapter = (ADAPTERS_BY_TERM_PROGRAM as Record<string, TerminalAdapter | undefined>)[
-    terminalProgram
-  ];
-  return adapter ?? generic;
+  return ADAPTERS_LOWERCASED[terminalProgram.toLowerCase()] ?? generic;
 }
 
 export type { TerminalAdapter } from "./types.ts";
