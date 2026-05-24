@@ -33,7 +33,7 @@ describe("broker title-write integration", () => {
       summary: "initial work",
     });
     const bytes = await waitForBytes(tty.getBytes, (s) => s.includes("initial work"));
-    expect(bytes).toBe(`\x1b]2;[${id}] initial work\x07`);
+    expect(bytes).toBe(`\x1b]2;working on initial work [${id}]\x07`);
   });
 
   test("/set-summary writes updated title bytes", async () => {
@@ -47,7 +47,7 @@ describe("broker title-write integration", () => {
 
     await postJson(broker, "/set-summary", { id, summary: "second update" });
     const bytes = await waitForBytes(tty.getBytes, (s) => s.includes("second update"));
-    expect(bytes).toBe(`\x1b]2;[${id}] second update\x07`);
+    expect(bytes).toBe(`\x1b]2;working on second update [${id}]\x07`);
   });
 
   test("unknown TERM_PROGRAM falls back to generic adapter (still writes OSC 2)", async () => {
@@ -58,7 +58,7 @@ describe("broker title-write integration", () => {
       summary: "unknown terminal",
     });
     const bytes = await waitForBytes(tty.getBytes, (s) => s.includes("unknown terminal"));
-    expect(bytes).toBe(`\x1b]2;[${id}] unknown terminal\x07`);
+    expect(bytes).toBe(`\x1b]2;working on unknown terminal [${id}]\x07`);
   });
 
   test("null terminal_program also works (generic fallback)", async () => {
@@ -69,7 +69,7 @@ describe("broker title-write integration", () => {
       summary: "no term program",
     });
     const bytes = await waitForBytes(tty.getBytes, (s) => s.includes("no term program"));
-    expect(bytes).toBe(`\x1b]2;[${id}] no term program\x07`);
+    expect(bytes).toBe(`\x1b]2;working on no term program [${id}]\x07`);
   });
 
   test("summary with embedded escape sequences is sanitized in the wire bytes", async () => {
@@ -124,6 +124,6 @@ describe("broker title-write integration", () => {
       summary: "opencode work",
     });
     const bytes = await waitForBytes(tty.getBytes, (s) => s.includes("opencode work"));
-    expect(bytes).toBe(`\x1b]2;[${id}] opencode work\x07`);
+    expect(bytes).toBe(`\x1b]2;working on opencode work [${id}]\x07`);
   });
 });

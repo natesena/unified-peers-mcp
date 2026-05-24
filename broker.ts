@@ -25,7 +25,7 @@ import {
   parseSkills,
   serializeSkills,
 } from "./shared/status.ts";
-import { colorForTeam } from "./shared/team-color.ts";
+import { colorForTeam, emojiForTeam } from "./shared/team-color.ts";
 import { formatTitle } from "./shared/terminals/format.ts";
 import { getAdapter } from "./shared/terminals/index.ts";
 import type {
@@ -252,15 +252,21 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
   // peer's TERM_PROGRAM (open set) and falls back to generic OSC 2 for
   // unknown terminals. We don't await because title hygiene is best-effort
   // and registration must stay fast.
+  //
+  // Title gets a team-emoji prefix iff the peer is an active team member
+  // (team && role). Same gate as the background tint, same hash drives
+  // both the emoji and the color so they always match.
   const adapter = getAdapter(body.terminal_program ?? null);
+  const initialEmojiPrefix = body.team && body.role ? emojiForTeam(body.team) : null;
   void adapter.writeTitle(
     body.tty,
-    formatTitle({ id, summary: body.summary, runtime: body.runtime }),
+    formatTitle(
+      { id, summary: body.summary, runtime: body.runtime },
+      { emojiPrefix: initialEmojiPrefix },
+    ),
   );
   // Per-team background tint (Ghostty only; other adapters no-op). Kill-
-  // switched by PEERS_VISUAL_DISABLED. Only emitted when the peer has BOTH
-  // a team and a role — being labeled with a team isn't enough; the tint
-  // signals active participation (orchestrator/worker), not passive grouping.
+  // switched by PEERS_VISUAL_DISABLED.
   const initialTeamColor =
     !VISUAL_DISABLED && body.team && body.role ? colorForTeam(body.team) : null;
   if (initialTeamColor) {
@@ -290,10 +296,15 @@ function handleSetSummary(body: SetSummaryRequest): void {
 
   // Fire-and-forget terminal title write reflecting the new summary.
   // Lookup is needed because this handler doesn't receive tty/runtime/
-  // terminal_program in the request — those live on the peer row.
+  // terminal_program/team/role in the request — those live on the peer row,
+  // and we need them to compute the emoji prefix that pairs with the title.
   const peer = db.query("SELECT * FROM peers WHERE id = ?").get(body.id) as Peer | null;
   if (peer) {
-    void getAdapter(peer.terminal_program).writeTitle(peer.tty, formatTitle(peer));
+    const emojiPrefix = peer.team && peer.role ? emojiForTeam(peer.team) : null;
+    void getAdapter(peer.terminal_program).writeTitle(
+      peer.tty,
+      formatTitle(peer, { emojiPrefix }),
+    );
   }
 }
 
@@ -354,24 +365,30 @@ function handleSetStatus(body: SetStatusRequest): { ok: true } | { error: string
   args.push(body.id);
   db.run(`UPDATE peers SET ${sets.join(", ")} WHERE id = ?`, args);
 
-  // Background-tint update. Only relevant if team or role changed, since the
-  // tint is gated on both being set. Read pre-update state above and compare
-  // with post-update state here:
-  //   - now-tinted (team && role): emit OSC 11 with new color
-  //   - was-tinted, not anymore: emit OSC 111 to clear
-  //   - neither: emit nothing (avoids spurious resets that would also clobber
-  //     title bytes in the fake-TTY test harness)
-  if (!VISUAL_DISABLED && ("team" in body || "role" in body)) {
-    const post = db.query("SELECT tty, terminal_program, team, role FROM peers WHERE id = ?").get(body.id) as
-      | { tty: string | null; terminal_program: string | null; team: string | null; role: string | null }
-      | null;
+  // Title + background update when team or role changes. Both are gated on
+  // (team && role): the emoji prefix in the title and the background tint
+  // appear/disappear together. We re-emit the title even when only the
+  // background-effective state changes, so the emoji stays consistent with
+  // what the dock / tab bar shows.
+  if ("team" in body || "role" in body) {
+    const post = db.query("SELECT * FROM peers WHERE id = ?").get(body.id) as Peer | null;
     if (post) {
+      const adapter = getAdapter(post.terminal_program);
       const preTinted = !!(pre.team && pre.role);
-      const postColor = post.team && post.role ? colorForTeam(post.team) : null;
-      if (postColor) {
-        void getAdapter(post.terminal_program).setBackground(post.tty, postColor);
-      } else if (preTinted) {
-        void getAdapter(post.terminal_program).setBackground(post.tty, null);
+      const postTinted = !!(post.team && post.role);
+      const postEmoji = postTinted ? emojiForTeam(post.team) : null;
+      // Always re-emit the title when team/role state crosses the gate —
+      // emoji appears or disappears, and we want the dock to update.
+      if (preTinted !== postTinted || (postTinted && pre.team !== post.team)) {
+        void adapter.writeTitle(post.tty, formatTitle(post, { emojiPrefix: postEmoji }));
+      }
+      if (!VISUAL_DISABLED) {
+        const postColor = postTinted ? colorForTeam(post.team) : null;
+        if (postColor) {
+          void adapter.setBackground(post.tty, postColor);
+        } else if (preTinted) {
+          void adapter.setBackground(post.tty, null);
+        }
       }
     }
   }
@@ -447,10 +464,10 @@ function handleRetitle(body: RetitleRequest): { ok: boolean; error?: string } {
   const peer = db.query("SELECT * FROM peers WHERE id = ?").get(body.id) as Peer | null;
   if (!peer) return { ok: false, error: `peer ${body.id} not found` };
   const adapter = getAdapter(peer.terminal_program);
-  void adapter.writeTitle(peer.tty, formatTitle(peer));
+  const emojiPrefix = peer.team && peer.role ? emojiForTeam(peer.team) : null;
+  void adapter.writeTitle(peer.tty, formatTitle(peer, { emojiPrefix }));
   // Re-assert the team tint in case it was clobbered too (same justification
-  // as the title re-assertion). Only when the peer has both team and role —
-  // those are the gates the initial tint requires.
+  // as the title re-assertion). Only when the peer has both team and role.
   const reAssertColor =
     !VISUAL_DISABLED && peer.team && peer.role ? colorForTeam(peer.team) : null;
   if (reAssertColor) {

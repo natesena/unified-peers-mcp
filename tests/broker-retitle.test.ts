@@ -40,7 +40,7 @@ describe("broker /retitle", () => {
     expect(res.ok).toBe(true);
 
     const bytes = await waitForBytes(tty.getBytes, (s) => s.includes("current task"));
-    expect(bytes).toBe(`\x1b]2;[${id}] current task\x07`);
+    expect(bytes).toBe(`\x1b]2;working on current task [${id}]\x07`);
   });
 
   test("unknown peer ID returns 404 with a clear error", async () => {
@@ -67,6 +67,6 @@ describe("broker /retitle", () => {
     await Bun.write(tty.ttyPath, "");
     await postJson(broker, "/retitle", { id });
     const bytes = await waitForBytes(tty.getBytes, (s) => s.includes("wez work"));
-    expect(bytes).toBe(`\x1b]2;[${id}] wez work\x07`);
+    expect(bytes).toBe(`\x1b]2;working on wez work [${id}]\x07`);
   });
 });

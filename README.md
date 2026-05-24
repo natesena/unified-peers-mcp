@@ -191,7 +191,7 @@ Each peer's host terminal window/tab title is auto-updated to reflect the peer's
 [k3p9q2nm] working on the broker dispatch refactor
 ```
 
-Format: `[<peer-id>] <summary>`. The peer ID always comes first so you can read it off the dock and pass it directly to `send_message` without a `list_peers` round-trip.
+Format: `[<emoji> ]working on <summary> [<peer-id>]` (or `[<emoji> ]idle [<peer-id>]` when no summary). The summary leads so the title reads naturally in the dock and window-switcher; the peer ID is in brackets at the end so it's still pasteable into `send_message` without a `list_peers` round-trip. The optional emoji prefix is the team color signal (see "Per-team color" below).
 
 The broker writes [OSC 2](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Operating-System-Commands) escape sequences directly to the peer's TTY device (`/dev/<tty>`) on registration and on every `set_summary`. Adapter selection lives in `shared/terminals/index.ts` and is keyed off the agent process's `TERM_PROGRAM` env var:
 
@@ -210,22 +210,27 @@ Caveats:
 - If the agent process is hard-killed (`kill -9`), the title may stay stale until the shell's next prompt callback reclaims it. Graceful exit clears the title.
 - Some shell prompts overwrite the title on every prompt redraw. While the agent is in the foreground (which is the normal case), the agent's title sticks.
 
-## Per-team background color (Ghostty)
+## Per-team color (emoji prefix + Ghostty background tint)
 
-When a peer is an **active member of a team** — both `team` and `role` are set — the broker tints that peer's Ghostty background with a deterministic, subtle color drawn from a 12-color palette. Same team name → same color, across peers and across broker restarts, with no shared state to configure. The tint is visible in Mission Control thumbnails and the window-switcher, making team membership obvious at a glance, without being loud enough to fight syntax-highlighted text.
+When a peer is an **active member of a team** — both `team` and `role` are set — the broker shows the team affiliation in **two places**:
 
-The gate is **both** `team` *and* `role`. A peer with only a team label (no role yet) stays untinted — the tint signals "I'm a participating peer", not "I happen to be tagged". Setting either of them to `null` (via `set_status`) clears the tint.
+1. **A colored circle/square emoji prefix in the window title** (e.g. `🟠 working on refactoring auth [k3p9q2nm]`). Works on every terminal; visible in Mission Control, window-switcher, dock tooltip, and Ghostty's own tab bar.
+2. **A very subtle background tint** in the Ghostty pane itself (OSC 11, palette in the `#0a` range — just a hint of hue, not loud enough to fight syntax highlighting). Other terminals get no background change.
 
-Only Ghostty receives the OSC 11 sequence today; other terminals are unaffected (the generic adapter is a no-op for `setBackground`). The background is updated on:
+Same deterministic hash drives both — so `team="alpha"` always gets the *same emoji* AND the *same color* across peers and across broker restarts. No shared state to configure; first 12 distinct teams land on the curated palette, then collisions begin.
+
+The gate is **both** `team` *and* `role`. A peer with only a team label (no role yet) gets neither the emoji nor the tint — the signal is "I'm a participating peer", not "I happen to be tagged". Setting either of them to `null` (via `set_status`) removes both signals together.
+
+Updates happen on:
 
 - `/register` when the peer registers with team + role
-- `/set-status` when either `team` or `role` changes the gate (now satisfied → tint; previously satisfied, now not → reset)
-- `/retitle` re-asserts the tint alongside the title (only when the gate is satisfied)
-- `/clear-title` resets the background to default on graceful shutdown (only if a tint was set)
+- `/set-status` when team or role changes (gate crossed in either direction → title and background updated to match)
+- `/retitle` re-asserts both alongside the title
+- `/clear-title` resets the background (only if a tint was set)
 
-To opt out (e.g. for screen-sharing or CI), set `PEERS_VISUAL_DISABLED=1` before starting the broker — titles still update, but the background tint is suppressed.
+To opt out of the background tint (e.g. for screen-sharing or CI), set `PEERS_VISUAL_DISABLED=1` before starting the broker — titles + emoji prefix still appear (those work everywhere; only the OSC 11 background is suppressed).
 
-The palette lives in `shared/team-color.ts` — twelve dark, terminal-readable hues in the 0x05–0x18 range. Mapping is a stable djb2 hash → palette index. Collisions above 12 distinct teams are expected and harmless. There is no per-team color override today; if you need one, file an issue.
+The two palettes (color + emoji) live in `shared/team-color.ts` and are kept in lockstep by index. There is no per-team color override today; if you need one, file an issue.
 
 ## Environment
 

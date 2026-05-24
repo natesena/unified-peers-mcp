@@ -60,7 +60,7 @@ describe("cli.ts retitle", () => {
     expect(result.stdout.toLowerCase()).toContain("title");
 
     const bytes = await waitForBytes(tty.getBytes, (s) => s.includes("cli retitle test"));
-    expect(bytes).toBe(`\x1b]2;[${id}] cli retitle test\x07`);
+    expect(bytes).toBe(`\x1b]2;working on cli retitle test [${id}]\x07`);
   });
 
   test("unknown peer ID exits non-zero with a clear error", async () => {

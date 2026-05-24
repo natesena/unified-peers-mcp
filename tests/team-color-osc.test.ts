@@ -73,7 +73,8 @@ describe("Ghostty register: tint requires BOTH team and role", () => {
     const tty = makeFakeTty(broker);
     await registerGhostty(tty.ttyName, { summary: "team only", team: "alpha" });
     const bytes = await waitForBytes(tty.getBytes, (s) => s.includes("]2;"));
-    expect(bytes).toContain("]2;[");
+    // New title shape: `working on <summary> [<id>]` — assert the prefix
+    expect(bytes).toContain("]2;working on ");
     expect(bytes).not.toContain("]11;");
   });
 
@@ -92,7 +93,8 @@ describe("Ghostty register: tint requires BOTH team and role", () => {
       terminal_program: "Ghostty",
     });
     const bytes = await waitForBytes(tty.getBytes, (s) => s.includes("]2;"));
-    expect(bytes).toContain("]2;[");
+    // New title shape: `working on <summary> [<id>]` — assert the prefix
+    expect(bytes).toContain("]2;working on ");
     expect(bytes).not.toContain("]11;");
   });
 

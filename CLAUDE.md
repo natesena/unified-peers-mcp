@@ -8,7 +8,7 @@ Cross-runtime peer messaging broker. Owns one localhost daemon + one CLI shared 
 - `cli.ts` — diagnose / status / peers / send / clean-orphans / kill-broker.
 - `shared/types.ts` — canonical Peer, Message, request/response types. Includes `PeerStatus` and `TaskState` enums.
 - `shared/status.ts` — pure helpers around `status`/`team`/`role`/`skills`: enum validators, skills JSON parse/serialize. Co-located unit tests in `status.test.ts`.
-- `shared/team-color.ts` — deterministic team → hex color hash (djb2 → 12-color palette). Used by the broker to tint Ghostty backgrounds per team. Pure; co-located unit tests in `team-color.test.ts`.
+- `shared/team-color.ts` — deterministic team → (hex color, emoji) hash (djb2 → 12-slot palette + 12-emoji palette, paired by index). Used by the broker to render the team affiliation in two places: a colored circle/square emoji prefix in the window title, and a very subtle background tint in Ghostty. Pure; co-located unit tests in `team-color.test.ts`.
 - `shared/runtimes.ts` — **the extensibility surface**. Closed `RUNTIMES` enum + instant-delivery handler registry. Add a new runtime here.
 - `shared/summarize.ts` — auto-summary helper using gpt-5.4-nano (used by `runtimes/claude/server.ts`).
 - `runtimes/claude/server.ts` — the claude runtime's MCP server. Polls broker every 1s, pushes via `mcp.notification("notifications/claude/channel", …)`. Lives here because it's small and has no runtime-specific helper code.
@@ -80,15 +80,22 @@ Any message can be tagged with `task_id` at send time. When set, the persisted m
 
 `send_message_multi` with a shared `task_id` writes one row per recipient — each recipient's `task_state` is independent.
 
-## Per-team background tint (Ghostty)
+## Per-team visual identity (emoji prefix + Ghostty background tint)
 
-When a peer is **actively in a team** — both `team` AND `role` set — the broker tints its Ghostty pane's background with a deterministic team-color (OSC 11). Same team → same color across peers and across broker restarts. Visible in Mission Control thumbnails.
+When a peer is **actively in a team** — both `team` AND `role` set — the broker shows the team in two places:
 
-- Gate is `team && role`, not `team` alone. Rationale: the tint should signal participation (orchestrator/worker), not just labeling. `handleSetStatus` reads pre- and post-update state and only emits OSC 11/111 on transitions across that gate.
-- Color comes from `colorForTeam(team)` in `shared/team-color.ts` — djb2 hash → 12-color palette of subtle dark hues (0x05–0x18 range). Pure function; deterministic.
-- Only Ghostty receives the bytes; generic adapter no-ops `setBackground` (so non-Ghostty terminals are unaffected). Lookup is case-insensitive (upm-wjv: lowercase `ghostty` was being dumped onto generic).
-- Emitted from `handleRegister`, `handleSetStatus` (when team or role is in the body), `handleRetitle`, and reset in `handleClearTitle`. Only emitted when the gate is satisfied — peers that never got tinted don't get spurious OSC 111 resets (which would also clobber title bytes in the fake-TTY test harness).
-- Kill-switch: `PEERS_VISUAL_DISABLED=1` suppresses all `setBackground` calls. Titles still update.
+1. **Title emoji prefix** (e.g. `🟠 working on refactoring auth [k3p9q2nm]`) — works everywhere via OSC 2, visible in dock / Mission Control / window-switcher / tab bar.
+2. **Background tint** in the Ghostty pane (OSC 11, very subtle 0x03–0x0a palette range) — Ghostty only; generic adapter no-ops `setBackground`.
+
+Both signals come from the same hash (`shared/team-color.ts`), so the color and the emoji always agree.
+
+Implementation notes:
+
+- Gate is `team && role`, not `team` alone. Rationale: the visual identity signals participation (orchestrator/worker), not just labeling. `handleSetStatus` reads pre- and post-update state, and re-emits both the title (so the emoji updates) AND the OSC 11/111 on transitions across that gate.
+- Title format lives in `shared/terminals/format.ts`: `[<emoji> ]working on <summary> [<id>]` (or `idle` fallback). `formatTitle` takes an optional `{ emojiPrefix }` opt; the broker computes it from peer.team/peer.role at each writeTitle callsite.
+- Adapter lookup is case-insensitive (upm-wjv: lowercase `ghostty` TERM_PROGRAM was previously dropping users onto generic).
+- Emitted from `handleRegister`, `handleSetStatus`, `handleSetSummary`, `handleRetitle`. Cleared in `handleClearTitle`. Title is always re-emitted on summary or team/role changes so the emoji stays in sync; background is only emitted on transitions across the (team && role) gate to avoid spurious OSC 111 resets that would clobber title bytes in the fake-TTY test harness.
+- Kill-switch: `PEERS_VISUAL_DISABLED=1` suppresses all `setBackground` calls. Titles + emoji prefix still appear (they work everywhere — only OSC 11 is Ghostty-specific).
 
 The adapter contract (`shared/terminals/types.ts`) was extended with `setBackground(tty, color | null)`. If you add a specialized adapter for another terminal that supports OSC 11 cleanly, implement `setBackground` there; otherwise inherit the generic no-op.
 

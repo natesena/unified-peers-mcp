@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { colorForTeam, TEAM_PALETTE_SIZE } from "./team-color.ts";
+import { colorForTeam, emojiForTeam, TEAM_PALETTE_SIZE } from "./team-color.ts";
 
 describe("colorForTeam — null / empty handling", () => {
   test("null returns null (no tint)", () => {
@@ -78,5 +78,64 @@ describe("colorForTeam — output shape", () => {
       if (c) seen.add(c);
     }
     expect(seen.size).toBeLessThanOrEqual(TEAM_PALETTE_SIZE);
+  });
+});
+
+describe("emojiForTeam — null / empty handling", () => {
+  test("null / undefined / empty / whitespace → null", () => {
+    expect(emojiForTeam(null)).toBe(null);
+    expect(emojiForTeam(undefined)).toBe(null);
+    expect(emojiForTeam("")).toBe(null);
+    expect(emojiForTeam("   ")).toBe(null);
+  });
+});
+
+describe("emojiForTeam — determinism", () => {
+  test("same team → same emoji every time", () => {
+    expect(emojiForTeam("alpha")).toBe(emojiForTeam("alpha"));
+    expect(emojiForTeam("auth-refactor-001")).toBe(emojiForTeam("auth-refactor-001"));
+  });
+
+  test("trim semantics match colorForTeam", () => {
+    expect(emojiForTeam(" alpha ")).toBe(emojiForTeam("alpha"));
+  });
+});
+
+describe("emojiForTeam — output", () => {
+  test("returns a non-empty string for a non-empty team", () => {
+    const emoji = emojiForTeam("alpha");
+    expect(typeof emoji).toBe("string");
+    expect(emoji!.length).toBeGreaterThan(0);
+  });
+
+  test("uses at most TEAM_PALETTE_SIZE distinct emoji", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const e = emojiForTeam(`team-${i}-${Math.random().toString(36).slice(2, 8)}`);
+      if (e) seen.add(e);
+    }
+    expect(seen.size).toBeLessThanOrEqual(TEAM_PALETTE_SIZE);
+  });
+});
+
+describe("color + emoji palettes are paired by index", () => {
+  test("two teams that hash to the same color also hash to the same emoji", () => {
+    // Generate many team names and verify (color, emoji) is a bijection —
+    // any two inputs mapping to the same color also map to the same emoji.
+    const byColor = new Map<string, Set<string>>();
+    for (let i = 0; i < 500; i++) {
+      const team = `${i}-${Math.random().toString(36).slice(2, 8)}`;
+      const c = colorForTeam(team);
+      const e = emojiForTeam(team);
+      if (c && e) {
+        const set = byColor.get(c) ?? new Set();
+        set.add(e);
+        byColor.set(c, set);
+      }
+    }
+    for (const [, emojis] of byColor) {
+      // Each color must correspond to exactly one emoji across all seen teams.
+      expect(emojis.size).toBe(1);
+    }
   });
 });
