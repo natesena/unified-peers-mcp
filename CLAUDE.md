@@ -8,6 +8,7 @@ Cross-runtime peer messaging broker. Owns one localhost daemon + one CLI shared 
 - `cli.ts` — diagnose / status / peers / send / clean-orphans / kill-broker.
 - `shared/types.ts` — canonical Peer, Message, request/response types. Includes `PeerStatus` and `TaskState` enums.
 - `shared/status.ts` — pure helpers around `status`/`team`/`role`/`skills`: enum validators, skills JSON parse/serialize. Co-located unit tests in `status.test.ts`.
+- `shared/team-color.ts` — deterministic team → hex color hash (djb2 → 12-color palette). Used by the broker to tint Ghostty backgrounds per team. Pure; co-located unit tests in `team-color.test.ts`.
 - `shared/runtimes.ts` — **the extensibility surface**. Closed `RUNTIMES` enum + instant-delivery handler registry. Add a new runtime here.
 - `shared/summarize.ts` — auto-summary helper using gpt-5.4-nano (used by `runtimes/claude/server.ts`).
 - `runtimes/claude/server.ts` — the claude runtime's MCP server. Polls broker every 1s, pushes via `mcp.notification("notifications/claude/channel", …)`. Lives here because it's small and has no runtime-specific helper code.
@@ -78,6 +79,17 @@ Why not auto-derive status from message activity / add a claim-release lock / fo
 Any message can be tagged with `task_id` at send time. When set, the persisted message row starts at `task_state='working'`. The recipient transitions it via `/set-task-state` (or the `set_task_state` MCP tool). Senders/strangers get HTTP 403; unknown task → 404; bad state → 400. State transitions are not enforced in v1.
 
 `send_message_multi` with a shared `task_id` writes one row per recipient — each recipient's `task_state` is independent.
+
+## Per-team background tint (Ghostty)
+
+When a peer's `team` is set, the broker tints its Ghostty pane's background with a deterministic team-color (OSC 11). Same team → same color across peers and across broker restarts. Visible in Mission Control thumbnails, so users can see team membership at a glance.
+
+- Color comes from `colorForTeam(team)` in `shared/team-color.ts` — djb2 hash → 12-color palette. Pure function; deterministic.
+- Only Ghostty receives the bytes; generic adapter no-ops `setBackground` (so non-Ghostty terminals are unaffected).
+- Emitted from `handleRegister`, `handleSetStatus` (when `team` is in the body), `handleRetitle`, and reset in `handleClearTitle` — same wire path as title writes. Only emitted when the peer actually has a team (no-team peers don't pay the byte cost and don't get unnecessary OSC 111 resets — which matters in tests where the fake-TTY file mocks would clobber title bytes).
+- Kill-switch: `PEERS_VISUAL_DISABLED=1` suppresses all `setBackground` calls. Titles still update.
+
+The adapter contract (`shared/terminals/types.ts`) was extended with `setBackground(tty, color | null)` and `clearTitle` still resets only the title. If you add a specialized adapter for another terminal that supports OSC 11 cleanly, implement `setBackground` there; otherwise inherit the generic no-op.
 
 ## When adding a runtime
 

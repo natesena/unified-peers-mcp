@@ -57,8 +57,12 @@ const TTY_DEVICE_DIR = (process.env.UPM_TTY_DIR ?? "/dev").replace(/\/+$/, "");
  * The tty may have closed (terminal window quit), or the broker process may
  * not own the tty (foreign user, sandboxed environment). Title hygiene is
  * best-effort; we don't surface these errors to callers.
+ *
+ * Exported so specialized adapters (ghostty.ts) can reuse the same plumbing
+ * without duplicating the file-write + UPM_TTY_DIR override + silent-fail
+ * pattern. Test harness exploits this via UPM_TTY_DIR.
  */
-async function writeToTty(tty: string, bytes: string): Promise<void> {
+export async function writeToTty(tty: string, bytes: string): Promise<void> {
   try {
     await Bun.write(`${TTY_DEVICE_DIR}/${tty}`, bytes);
   } catch {
@@ -82,4 +86,9 @@ export const generic: TerminalAdapter = {
     if (!tty) return;
     await writeToTty(tty, buildClearTitleBytes());
   },
+
+  // No-op. Generic targets the broadest set of terminals — many ignore OSC 11
+  // or worse, render dynamic background changes badly. Specialized adapters
+  // (ghostty.ts) override this when the terminal is known to honor it cleanly.
+  async setBackground() { /* intentional no-op */ },
 };

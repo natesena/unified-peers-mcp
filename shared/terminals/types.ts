@@ -37,4 +37,17 @@ export interface TerminalAdapter {
    * Same no-throw contract as writeTitle.
    */
   clearTitle(tty: string | null): Promise<void>;
+
+  /**
+   * Tint the terminal background to the given #rrggbb color, or reset to
+   * the terminal's default when `color` is null. Used today for per-team
+   * color signaling so panes for different teams are obvious at a glance
+   * (especially in Mission Control thumbnails).
+   *
+   * The generic adapter no-ops this — only terminals known to honor a
+   * dynamic background sequence (Ghostty via OSC 11) actually emit bytes.
+   * Same fire-and-forget / no-throw / no-op-on-blank-tty contract as
+   * writeTitle.
+   */
+  setBackground(tty: string | null, color: string | null): Promise<void>;
 }

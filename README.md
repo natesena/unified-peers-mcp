@@ -210,6 +210,21 @@ Caveats:
 - If the agent process is hard-killed (`kill -9`), the title may stay stale until the shell's next prompt callback reclaims it. Graceful exit clears the title.
 - Some shell prompts overwrite the title on every prompt redraw. While the agent is in the foreground (which is the normal case), the agent's title sticks.
 
+## Per-team background color (Ghostty)
+
+When a peer's `team` field is set, the broker tints that peer's terminal background with a deterministic color drawn from a 12-color palette. Same team name → same color, across peers and across broker restarts, with no shared state to configure — `team="alpha"` is always the same orange-tinted pane in every window hosting an alpha-team peer. The tint is visible in Mission Control thumbnails and the window-switcher, making team membership obvious at a glance.
+
+Only Ghostty receives the OSC 11 sequence today; other terminals are unaffected (the generic adapter is a no-op for `setBackground`). The background is updated on:
+
+- `/register` when the peer registers with a team
+- `/set-status` when the team field changes (set to a new value, or cleared with `team: null`)
+- `/retitle` re-asserts the tint alongside the title
+- `/clear-title` resets the background to default on graceful shutdown (only if a tint was set)
+
+To opt out (e.g. for screen-sharing or CI), set `PEERS_VISUAL_DISABLED=1` before starting the broker — titles still update, but the background tint is suppressed.
+
+The palette lives in `shared/team-color.ts`. Mapping is a stable djb2 hash → index into 12 dark, terminal-readable colors. Collisions above 12 distinct teams are expected and harmless. There is no per-team color override today; if you need one, file an issue.
+
 ## Environment
 
 | Variable | Default | Notes |
@@ -217,6 +232,7 @@ Caveats:
 | `PEERS_PORT` | `7900` | Falls back to legacy `OPENCODE_PEERS_PORT` / `CLAUDE_PEERS_PORT` for back-compat |
 | `PEERS_DB` | `~/.peers.db` | Falls back to legacy `OPENCODE_PEERS_DB` / `CLAUDE_PEERS_DB` |
 | `UPM_TTY_DIR` | `/dev` | Directory the broker writes terminal-title escape sequences into. Override for tests or unusual sandbox setups where TTY devices live elsewhere. |
+| `PEERS_VISUAL_DISABLED` | _(unset)_ | Set to `1` to suppress per-team background tinting (titles still update). Useful when screen-sharing. |
 
 ## HTTP endpoints
 

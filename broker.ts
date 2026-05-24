@@ -25,6 +25,7 @@ import {
   parseSkills,
   serializeSkills,
 } from "./shared/status.ts";
+import { colorForTeam } from "./shared/team-color.ts";
 import { formatTitle } from "./shared/terminals/format.ts";
 import { getAdapter } from "./shared/terminals/index.ts";
 import type {
@@ -58,6 +59,13 @@ const DB_PATH =
   process.env.OPENCODE_PEERS_DB ??
   process.env.CLAUDE_PEERS_DB ??
   `${process.env.HOME}/.peers.db`;
+
+/**
+ * Master kill-switch for terminal visual changes beyond the title.
+ * Set `PEERS_VISUAL_DISABLED=1` to suppress per-team background tinting
+ * (useful when screen-sharing or in CI). Titles still update either way.
+ */
+const VISUAL_DISABLED = process.env.PEERS_VISUAL_DISABLED === "1";
 
 const db = new Database(DB_PATH);
 db.run("PRAGMA journal_mode = WAL");
@@ -249,6 +257,14 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
     body.tty,
     formatTitle({ id, summary: body.summary, runtime: body.runtime }),
   );
+  // Per-team background tint (Ghostty only; other adapters no-op). Kill-
+  // switched by PEERS_VISUAL_DISABLED. Only emitted when the peer actually
+  // has a team — peers without a team leave the terminal's default background
+  // untouched (no need to emit a reset on first register).
+  const initialTeamColor = VISUAL_DISABLED ? null : colorForTeam(body.team ?? null);
+  if (initialTeamColor) {
+    void adapter.setBackground(body.tty, initialTeamColor);
+  }
 
   return { id };
 }
@@ -334,6 +350,19 @@ function handleSetStatus(body: SetStatusRequest): { ok: true } | { error: string
 
   args.push(body.id);
   db.run(`UPDATE peers SET ${sets.join(", ")} WHERE id = ?`, args);
+
+  // If the team changed, repaint the background. We don't gate on whether
+  // `team` was *in* the body because UPDATE may also have changed it via a
+  // race; cheapest correct thing is to re-read the row and re-emit the
+  // setBackground. Skips the OSC write entirely when VISUAL_DISABLED.
+  if (!VISUAL_DISABLED && "team" in body) {
+    const peer = db.query("SELECT tty, terminal_program, team FROM peers WHERE id = ?").get(body.id) as
+      | { tty: string | null; terminal_program: string | null; team: string | null }
+      | null;
+    if (peer) {
+      void getAdapter(peer.terminal_program).setBackground(peer.tty, colorForTeam(peer.team));
+    }
+  }
   return { ok: true };
 }
 
@@ -379,11 +408,19 @@ function handleSetTaskState(
  * no tty. Title hygiene is best-effort.
  */
 function handleClearTitle(body: ClearTitleRequest): void {
-  const peer = db.query("SELECT tty, terminal_program FROM peers WHERE id = ?").get(body.id) as
-    | { tty: string | null; terminal_program: string | null }
+  const peer = db.query("SELECT tty, terminal_program, team FROM peers WHERE id = ?").get(body.id) as
+    | { tty: string | null; terminal_program: string | null; team: string | null }
     | null;
   if (peer) {
-    void getAdapter(peer.terminal_program).clearTitle(peer.tty);
+    const adapter = getAdapter(peer.terminal_program);
+    void adapter.clearTitle(peer.tty);
+    // Reset the per-team background only if we ever set one. Peers without a
+    // team never had their background touched, so emitting OSC 111 would be
+    // pointless noise (and would clobber the title in test harnesses where
+    // /dev/<tty> is a regular file that writes truncate).
+    if (!VISUAL_DISABLED && peer.team) {
+      void adapter.setBackground(peer.tty, null);
+    }
   }
 }
 
@@ -397,7 +434,15 @@ function handleClearTitle(body: ClearTitleRequest): void {
 function handleRetitle(body: RetitleRequest): { ok: boolean; error?: string } {
   const peer = db.query("SELECT * FROM peers WHERE id = ?").get(body.id) as Peer | null;
   if (!peer) return { ok: false, error: `peer ${body.id} not found` };
-  void getAdapter(peer.terminal_program).writeTitle(peer.tty, formatTitle(peer));
+  const adapter = getAdapter(peer.terminal_program);
+  void adapter.writeTitle(peer.tty, formatTitle(peer));
+  // Re-assert the team tint in case it was clobbered too (same justification
+  // as the title re-assertion). Only when there's actually a team — peers
+  // without one have no tint to re-assert.
+  const reAssertColor = VISUAL_DISABLED ? null : colorForTeam(peer.team);
+  if (reAssertColor) {
+    void adapter.setBackground(peer.tty, reAssertColor);
+  }
   return { ok: true };
 }
 
