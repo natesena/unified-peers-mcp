@@ -258,10 +258,11 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
     formatTitle({ id, summary: body.summary, runtime: body.runtime }),
   );
   // Per-team background tint (Ghostty only; other adapters no-op). Kill-
-  // switched by PEERS_VISUAL_DISABLED. Only emitted when the peer actually
-  // has a team — peers without a team leave the terminal's default background
-  // untouched (no need to emit a reset on first register).
-  const initialTeamColor = VISUAL_DISABLED ? null : colorForTeam(body.team ?? null);
+  // switched by PEERS_VISUAL_DISABLED. Only emitted when the peer has BOTH
+  // a team and a role — being labeled with a team isn't enough; the tint
+  // signals active participation (orchestrator/worker), not passive grouping.
+  const initialTeamColor =
+    !VISUAL_DISABLED && body.team && body.role ? colorForTeam(body.team) : null;
   if (initialTeamColor) {
     void adapter.setBackground(body.tty, initialTeamColor);
   }
@@ -305,8 +306,10 @@ function handleSetSummary(body: SetSummaryRequest): void {
  * doesn't partially apply other fields.
  */
 function handleSetStatus(body: SetStatusRequest): { ok: true } | { error: string; status: number } {
-  const exists = db.query("SELECT id FROM peers WHERE id = ?").get(body.id) as { id: string } | null;
-  if (!exists) return { error: `peer ${body.id} not found`, status: 404 };
+  const pre = db.query("SELECT team, role FROM peers WHERE id = ?").get(body.id) as
+    | { team: string | null; role: string | null }
+    | null;
+  if (!pre) return { error: `peer ${body.id} not found`, status: 404 };
 
   if ("status" in body && body.status !== undefined) {
     if (body.status === null || !isPeerStatus(body.status)) {
@@ -351,16 +354,25 @@ function handleSetStatus(body: SetStatusRequest): { ok: true } | { error: string
   args.push(body.id);
   db.run(`UPDATE peers SET ${sets.join(", ")} WHERE id = ?`, args);
 
-  // If the team changed, repaint the background. We don't gate on whether
-  // `team` was *in* the body because UPDATE may also have changed it via a
-  // race; cheapest correct thing is to re-read the row and re-emit the
-  // setBackground. Skips the OSC write entirely when VISUAL_DISABLED.
-  if (!VISUAL_DISABLED && "team" in body) {
-    const peer = db.query("SELECT tty, terminal_program, team FROM peers WHERE id = ?").get(body.id) as
-      | { tty: string | null; terminal_program: string | null; team: string | null }
+  // Background-tint update. Only relevant if team or role changed, since the
+  // tint is gated on both being set. Read pre-update state above and compare
+  // with post-update state here:
+  //   - now-tinted (team && role): emit OSC 11 with new color
+  //   - was-tinted, not anymore: emit OSC 111 to clear
+  //   - neither: emit nothing (avoids spurious resets that would also clobber
+  //     title bytes in the fake-TTY test harness)
+  if (!VISUAL_DISABLED && ("team" in body || "role" in body)) {
+    const post = db.query("SELECT tty, terminal_program, team, role FROM peers WHERE id = ?").get(body.id) as
+      | { tty: string | null; terminal_program: string | null; team: string | null; role: string | null }
       | null;
-    if (peer) {
-      void getAdapter(peer.terminal_program).setBackground(peer.tty, colorForTeam(peer.team));
+    if (post) {
+      const preTinted = !!(pre.team && pre.role);
+      const postColor = post.team && post.role ? colorForTeam(post.team) : null;
+      if (postColor) {
+        void getAdapter(post.terminal_program).setBackground(post.tty, postColor);
+      } else if (preTinted) {
+        void getAdapter(post.terminal_program).setBackground(post.tty, null);
+      }
     }
   }
   return { ok: true };
@@ -408,17 +420,17 @@ function handleSetTaskState(
  * no tty. Title hygiene is best-effort.
  */
 function handleClearTitle(body: ClearTitleRequest): void {
-  const peer = db.query("SELECT tty, terminal_program, team FROM peers WHERE id = ?").get(body.id) as
-    | { tty: string | null; terminal_program: string | null; team: string | null }
+  const peer = db.query("SELECT tty, terminal_program, team, role FROM peers WHERE id = ?").get(body.id) as
+    | { tty: string | null; terminal_program: string | null; team: string | null; role: string | null }
     | null;
   if (peer) {
     const adapter = getAdapter(peer.terminal_program);
     void adapter.clearTitle(peer.tty);
-    // Reset the per-team background only if we ever set one. Peers without a
-    // team never had their background touched, so emitting OSC 111 would be
-    // pointless noise (and would clobber the title in test harnesses where
-    // /dev/<tty> is a regular file that writes truncate).
-    if (!VISUAL_DISABLED && peer.team) {
+    // Reset the per-team background only if we ever set one. The tint is gated
+    // on (team && role), so the reset is too — peers that never got tinted
+    // don't need an OSC 111 (which would also clobber title bytes in the
+    // fake-TTY test harness where writes truncate).
+    if (!VISUAL_DISABLED && peer.team && peer.role) {
       void adapter.setBackground(peer.tty, null);
     }
   }
@@ -437,9 +449,10 @@ function handleRetitle(body: RetitleRequest): { ok: boolean; error?: string } {
   const adapter = getAdapter(peer.terminal_program);
   void adapter.writeTitle(peer.tty, formatTitle(peer));
   // Re-assert the team tint in case it was clobbered too (same justification
-  // as the title re-assertion). Only when there's actually a team — peers
-  // without one have no tint to re-assert.
-  const reAssertColor = VISUAL_DISABLED ? null : colorForTeam(peer.team);
+  // as the title re-assertion). Only when the peer has both team and role —
+  // those are the gates the initial tint requires.
+  const reAssertColor =
+    !VISUAL_DISABLED && peer.team && peer.role ? colorForTeam(peer.team) : null;
   if (reAssertColor) {
     void adapter.setBackground(peer.tty, reAssertColor);
   }

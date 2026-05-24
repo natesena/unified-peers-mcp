@@ -12,28 +12,31 @@
  */
 
 /**
- * Hand-curated palette: each color is dark enough that white-on-X stays
- * comfortable, saturated enough that adjacent panes in Mission Control look
- * obviously distinct. Order matters — first entries are the most common /
- * visually pleasant hues so small teams land on them first.
+ * Hand-curated palette of *subtle* dark tints. Each color sits in the
+ * 0x05–0x18 range — visible against a pure-black terminal background but
+ * unobtrusive enough not to fight syntax-highlighted text. Halved from the
+ * original launch palette after user feedback that the tint was too loud.
+ *
+ * Order matters — first entries are the most visually pleasant hues so
+ * small teams land on them first.
  *
  * If you reorder or recolor, expect existing teams to switch backgrounds on
  * the next broker restart. That's fine — there is no contract that a given
  * team gets a specific color, only that *this run* of the broker is consistent.
  */
 const PALETTE = [
-  "#2a1a0a", // orange
-  "#0a1a2a", // blue
-  "#0a2a14", // green
-  "#1f0a2a", // purple
-  "#2a0a14", // red
-  "#2a2a0a", // yellow
-  "#0a2a2a", // teal
-  "#2a0a2a", // pink
-  "#1a2a0a", // lime
-  "#1a0a2a", // indigo
-  "#2a140a", // burnt orange
-  "#0a2a1f", // forest
+  "#150d05", // orange
+  "#050d15", // blue
+  "#05150a", // green
+  "#0f0515", // purple
+  "#15050a", // red
+  "#15150a", // yellow
+  "#051515", // teal
+  "#150515", // pink
+  "#0d1505", // lime
+  "#0d0515", // indigo
+  "#150a05", // burnt orange
+  "#05150f", // forest
 ] as const;
 
 /**

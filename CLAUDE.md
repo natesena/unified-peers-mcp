@@ -82,14 +82,15 @@ Any message can be tagged with `task_id` at send time. When set, the persisted m
 
 ## Per-team background tint (Ghostty)
 
-When a peer's `team` is set, the broker tints its Ghostty pane's background with a deterministic team-color (OSC 11). Same team → same color across peers and across broker restarts. Visible in Mission Control thumbnails, so users can see team membership at a glance.
+When a peer is **actively in a team** — both `team` AND `role` set — the broker tints its Ghostty pane's background with a deterministic team-color (OSC 11). Same team → same color across peers and across broker restarts. Visible in Mission Control thumbnails.
 
-- Color comes from `colorForTeam(team)` in `shared/team-color.ts` — djb2 hash → 12-color palette. Pure function; deterministic.
-- Only Ghostty receives the bytes; generic adapter no-ops `setBackground` (so non-Ghostty terminals are unaffected).
-- Emitted from `handleRegister`, `handleSetStatus` (when `team` is in the body), `handleRetitle`, and reset in `handleClearTitle` — same wire path as title writes. Only emitted when the peer actually has a team (no-team peers don't pay the byte cost and don't get unnecessary OSC 111 resets — which matters in tests where the fake-TTY file mocks would clobber title bytes).
+- Gate is `team && role`, not `team` alone. Rationale: the tint should signal participation (orchestrator/worker), not just labeling. `handleSetStatus` reads pre- and post-update state and only emits OSC 11/111 on transitions across that gate.
+- Color comes from `colorForTeam(team)` in `shared/team-color.ts` — djb2 hash → 12-color palette of subtle dark hues (0x05–0x18 range). Pure function; deterministic.
+- Only Ghostty receives the bytes; generic adapter no-ops `setBackground` (so non-Ghostty terminals are unaffected). Lookup is case-insensitive (upm-wjv: lowercase `ghostty` was being dumped onto generic).
+- Emitted from `handleRegister`, `handleSetStatus` (when team or role is in the body), `handleRetitle`, and reset in `handleClearTitle`. Only emitted when the gate is satisfied — peers that never got tinted don't get spurious OSC 111 resets (which would also clobber title bytes in the fake-TTY test harness).
 - Kill-switch: `PEERS_VISUAL_DISABLED=1` suppresses all `setBackground` calls. Titles still update.
 
-The adapter contract (`shared/terminals/types.ts`) was extended with `setBackground(tty, color | null)` and `clearTitle` still resets only the title. If you add a specialized adapter for another terminal that supports OSC 11 cleanly, implement `setBackground` there; otherwise inherit the generic no-op.
+The adapter contract (`shared/terminals/types.ts`) was extended with `setBackground(tty, color | null)`. If you add a specialized adapter for another terminal that supports OSC 11 cleanly, implement `setBackground` there; otherwise inherit the generic no-op.
 
 ## When adding a runtime
 

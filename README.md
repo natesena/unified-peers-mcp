@@ -212,18 +212,20 @@ Caveats:
 
 ## Per-team background color (Ghostty)
 
-When a peer's `team` field is set, the broker tints that peer's terminal background with a deterministic color drawn from a 12-color palette. Same team name → same color, across peers and across broker restarts, with no shared state to configure — `team="alpha"` is always the same orange-tinted pane in every window hosting an alpha-team peer. The tint is visible in Mission Control thumbnails and the window-switcher, making team membership obvious at a glance.
+When a peer is an **active member of a team** — both `team` and `role` are set — the broker tints that peer's Ghostty background with a deterministic, subtle color drawn from a 12-color palette. Same team name → same color, across peers and across broker restarts, with no shared state to configure. The tint is visible in Mission Control thumbnails and the window-switcher, making team membership obvious at a glance, without being loud enough to fight syntax-highlighted text.
+
+The gate is **both** `team` *and* `role`. A peer with only a team label (no role yet) stays untinted — the tint signals "I'm a participating peer", not "I happen to be tagged". Setting either of them to `null` (via `set_status`) clears the tint.
 
 Only Ghostty receives the OSC 11 sequence today; other terminals are unaffected (the generic adapter is a no-op for `setBackground`). The background is updated on:
 
-- `/register` when the peer registers with a team
-- `/set-status` when the team field changes (set to a new value, or cleared with `team: null`)
-- `/retitle` re-asserts the tint alongside the title
+- `/register` when the peer registers with team + role
+- `/set-status` when either `team` or `role` changes the gate (now satisfied → tint; previously satisfied, now not → reset)
+- `/retitle` re-asserts the tint alongside the title (only when the gate is satisfied)
 - `/clear-title` resets the background to default on graceful shutdown (only if a tint was set)
 
 To opt out (e.g. for screen-sharing or CI), set `PEERS_VISUAL_DISABLED=1` before starting the broker — titles still update, but the background tint is suppressed.
 
-The palette lives in `shared/team-color.ts`. Mapping is a stable djb2 hash → index into 12 dark, terminal-readable colors. Collisions above 12 distinct teams are expected and harmless. There is no per-team color override today; if you need one, file an issue.
+The palette lives in `shared/team-color.ts` — twelve dark, terminal-readable hues in the 0x05–0x18 range. Mapping is a stable djb2 hash → palette index. Collisions above 12 distinct teams are expected and harmless. There is no per-team color override today; if you need one, file an issue.
 
 ## Environment
 
