@@ -34,6 +34,7 @@ import type {
   PollMessagesResponse,
   SendMessageMultiResponse,
 } from "../../shared/types.ts";
+import { PEER_STATUSES, TASK_STATES } from "../../shared/types.ts";
 import {
   generateSummary,
   getGitBranch,
@@ -164,18 +165,29 @@ On startup, call set_summary to describe what you're working on. This helps othe
 
 ## Available Tools
 
-- list_peers: Discover other peers across runtimes (scope: machine/directory/repo)
-- send_message: Send a message to one or more peers by ID
+- list_peers: Discover other peers across runtimes (scope: machine/directory/repo). Optionally filter by status/team/skill.
+- send_message: Send a message to one or more peers by ID. Optionally tag with task_id when assigning trackable work.
 - set_summary: Set your summary (visible to other peers)
-- check_messages: Check for queued messages from other peers`,
+- set_status: Update your AgentCard — availability (available/busy/away), team, role, skills. Orchestrators use these to pick who to task.
+- set_task_state: As a worker, transition a task you received to working/completed/failed/canceled.
+- check_messages: Check for queued messages from other peers
+
+## Orchestrator pattern
+
+To coordinate a multi-agent task:
+1. Declare yourself: set_status(status='busy', team='<task-name>', role='orchestrator', skills=[...])
+2. Find workers: list_peers(status='available', skill='<needed skill>')
+3. Assign work: send_message(to_ids=[...], message='do X', task_id='<task-name>-001'); ask each worker to set_status(status='busy', team='<task-name>', role='worker')
+4. Workers transition on done: set_task_state(task_id='<task-name>-001', state='completed')
+5. Everyone resets: set_status(status='available', team=null, role=null)`,
   }
 );
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: "list_peers",
     description:
-      "List other peers running on this machine across all runtimes (opencode and Claude Code). Returns their ID, working directory, git repo, and summary.",
+      "List other peers running on this machine across all runtimes (opencode and Claude Code). Returns their ID, working directory, git repo, summary, status, team, role, and skills. Optionally filter by status, team, or skill — useful for orchestrators looking for available workers.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -185,6 +197,19 @@ const TOOLS = [
           description:
             'Scope of peer discovery. "machine" = all instances on this computer. "directory" = same working directory. "repo" = same git repository (including worktrees or subdirectories).',
         },
+        status: {
+          type: "string" as const,
+          enum: [...PEER_STATUSES],
+          description: 'Optional. Only return peers with this status.',
+        },
+        team: {
+          type: "string" as const,
+          description: "Optional. Only return peers on this team (exact match).",
+        },
+        skill: {
+          type: "string" as const,
+          description: "Optional. Only return peers whose skills array contains this exact string.",
+        },
       },
       required: ["scope"],
     },
@@ -192,7 +217,7 @@ const TOOLS = [
   {
     name: "send_message",
     description:
-      "Send a message to one or more peers by ID. Pass `to_ids: [\"abc\"]` for a single peer, or `to_ids: [\"abc\", \"def\"]` to fan out to several in one call.",
+      "Send a message to one or more peers by ID. Pass `to_ids: [\"abc\"]` for a single peer, or `to_ids: [\"abc\", \"def\"]` to fan out to several in one call. Optionally pass `task_id` to tag the message as trackable work — the recipient starts at task_state='working' and reports progress via set_task_state.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -205,6 +230,10 @@ const TOOLS = [
         message: {
           type: "string" as const,
           description: "The message to send",
+        },
+        task_id: {
+          type: "string" as const,
+          description: 'Optional. Tag this message as a trackable task (e.g. "auth-refactor-001").',
         },
       },
       required: ["to_ids", "message"],
@@ -223,6 +252,54 @@ const TOOLS = [
         },
       },
       required: ["summary"],
+    },
+  },
+  {
+    name: "set_status",
+    description:
+      "Update your AgentCard fields: availability (status), team membership, role, and skills. Partial update — fields you omit are unchanged; passing null explicitly clears team/role/skills. status cannot be cleared (always one of available/busy/away).",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        status: {
+          type: "string" as const,
+          enum: [...PEER_STATUSES],
+          description: 'Your availability: "available", "busy", or "away".',
+        },
+        team: {
+          type: ["string", "null"] as unknown as "string",
+          description: "Free-text team label. Pass null to clear.",
+        },
+        role: {
+          type: ["string", "null"] as unknown as "string",
+          description: 'Free-text role (e.g. "orchestrator", "worker"). Pass null to clear.',
+        },
+        skills: {
+          type: ["array", "null"] as unknown as "array",
+          items: { type: "string" as const },
+          description: 'Free-text capability tags. Pass null to clear.',
+        },
+      },
+    },
+  },
+  {
+    name: "set_task_state",
+    description:
+      "As the recipient of a task-tagged message, transition the task to a new state. Only the recipient peer(s) can call this for a given task_id. Valid states: working, completed, failed, canceled.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        task_id: {
+          type: "string" as const,
+          description: "The task_id from the message you received.",
+        },
+        state: {
+          type: "string" as const,
+          enum: [...TASK_STATES],
+          description: "New task state.",
+        },
+      },
+      required: ["task_id", "state"],
     },
   },
   {
@@ -251,23 +328,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   switch (name) {
     case "list_peers": {
-      const scope = (args as { scope: string }).scope as "machine" | "directory" | "repo";
+      const a = args as { scope: string; status?: string; team?: string; skill?: string };
+      const scope = a.scope as "machine" | "directory" | "repo";
       try {
         const peers = await brokerFetch<Peer[]>("/list-peers", {
           scope,
           cwd: myCwd,
           git_root: myGitRoot,
           exclude_id: myId,
+          status: a.status,
+          team: a.team,
+          skill: a.skill,
         });
+
+        const filterDesc = [
+          a.status && `status=${a.status}`,
+          a.team && `team=${a.team}`,
+          a.skill && `skill=${a.skill}`,
+        ].filter(Boolean).join(", ");
+        const header = filterDesc ? `scope: ${scope}; filters: ${filterDesc}` : `scope: ${scope}`;
 
         if (peers.length === 0) {
           return {
-            content: [
-              {
-                type: "text" as const,
-                text: `No other peers found (scope: ${scope}).`,
-              },
-            ],
+            content: [{ type: "text" as const, text: `No other peers found (${header}).` }],
           };
         }
 
@@ -280,6 +363,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           ];
           if (p.git_root) parts.push(`Repo: ${p.git_root}`);
           if (p.tty) parts.push(`TTY: ${p.tty}`);
+          parts.push(`Status: ${p.status}`);
+          if (p.team) parts.push(`Team: ${p.team}`);
+          if (p.role) parts.push(`Role: ${p.role}`);
+          if (p.skills && p.skills.length > 0) parts.push(`Skills: ${p.skills.join(", ")}`);
           if (p.summary) parts.push(`Summary: ${p.summary}`);
           parts.push(`Last seen: ${p.last_seen}`);
           return parts.join("\n  ");
@@ -289,7 +376,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             {
               type: "text" as const,
-              text: `Found ${peers.length} peer(s) (scope: ${scope}):\n\n${lines.join("\n\n")}`,
+              text: `Found ${peers.length} peer(s) (${header}):\n\n${lines.join("\n\n")}`,
             },
           ],
         };
@@ -307,7 +394,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case "send_message": {
-      const { to_ids, message } = args as { to_ids: string[]; message: string };
+      const { to_ids, message, task_id } = args as { to_ids: string[]; message: string; task_id?: string };
       if (!myId) {
         return {
           content: [{ type: "text" as const, text: "Not registered with broker yet" }],
@@ -325,6 +412,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           from_id: myId,
           to_ids,
           text: message,
+          task_id: task_id ?? null,
         });
         if (result.results.length === 1) {
           const r = result.results[0];
@@ -399,6 +487,43 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           ],
           isError: true,
         };
+      }
+    }
+
+    case "set_status": {
+      if (!myId) {
+        return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
+      }
+      const a = args as { status?: string; team?: string | null; role?: string | null; skills?: string[] | null };
+      const body: Record<string, unknown> = { id: myId };
+      if ("status" in a) body.status = a.status;
+      if ("team" in a) body.team = a.team;
+      if ("role" in a) body.role = a.role;
+      if ("skills" in a) body.skills = a.skills;
+      try {
+        await brokerFetch("/set-status", body);
+        const summary = [
+          a.status !== undefined && `status=${a.status}`,
+          "team" in a && `team=${a.team === null ? "(cleared)" : a.team}`,
+          "role" in a && `role=${a.role === null ? "(cleared)" : a.role}`,
+          "skills" in a && `skills=${a.skills === null ? "(cleared)" : JSON.stringify(a.skills)}`,
+        ].filter(Boolean).join(", ");
+        return { content: [{ type: "text" as const, text: summary ? `Status updated: ${summary}` : "No changes." }] };
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: `Error setting status: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
+      }
+    }
+
+    case "set_task_state": {
+      if (!myId) {
+        return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
+      }
+      const { task_id, state } = args as { task_id: string; state: string };
+      try {
+        await brokerFetch("/set-task-state", { id: myId, task_id, state });
+        return { content: [{ type: "text" as const, text: `Task ${task_id} → ${state}` }] };
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: `Error setting task state: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
       }
     }
 
@@ -570,7 +695,12 @@ async function main() {
   process.on("SIGTERM", cleanup);
 }
 
-main().catch((e) => {
-  log(`Fatal: ${e instanceof Error ? e.message : String(e)}`);
-  process.exit(1);
-});
+// Only start the server when this module is executed directly (`bun server.ts`).
+// On `import`, we still export TOOLS so tests can introspect the tool list
+// without triggering the broker auto-launch or the MCP stdio connection.
+if (import.meta.main) {
+  main().catch((e) => {
+    log(`Fatal: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  });
+}

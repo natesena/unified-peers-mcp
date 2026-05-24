@@ -149,3 +149,55 @@ export async function registerPeer(
   });
   return res.json() as Promise<{ id: string }>;
 }
+
+/**
+ * Register a peer backed by a real long-lived child process, so the broker's
+ * `process.kill(pid, 0)` liveness check passes and /list-peers does NOT garbage-
+ * collect it mid-test. Returns the new peer id and a cleanup() the caller MUST
+ * invoke (typically in afterAll) so subprocesses don't leak.
+ *
+ * Use this for any test that calls /list-peers; use `registerPeer` for tests
+ * that only care about /register, /set-summary, /set-status etc. and never
+ * exercise the pid-check path.
+ */
+export async function registerLivePeer(
+  broker: TestBroker,
+  opts: {
+    cwd?: string;
+    git_root?: string | null;
+    tty?: string | null;
+    summary?: string;
+    runtime?: "claude" | "opencode";
+    status?: "available" | "busy" | "away";
+    team?: string | null;
+    role?: string | null;
+    skills?: string[] | null;
+  } = {},
+): Promise<{ id: string; cleanup: () => void }> {
+  const proc = Bun.spawn(["bun", "-e", "await new Promise(() => {})"], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const body: Record<string, unknown> = {
+    pid: proc.pid,
+    cwd: opts.cwd ?? "/tmp",
+    git_root: opts.git_root ?? null,
+    tty: opts.tty ?? null,
+    runtime: opts.runtime ?? "claude",
+    summary: opts.summary ?? "",
+  };
+  if (opts.status !== undefined) body.status = opts.status;
+  if (opts.team !== undefined) body.team = opts.team;
+  if (opts.role !== undefined) body.role = opts.role;
+  if (opts.skills !== undefined) body.skills = opts.skills;
+  const res = await postJson(broker, "/register", body);
+  const json = (await res.json()) as { id?: string; error?: string };
+  if (!json.id) {
+    try { proc.kill(); } catch {}
+    throw new Error(`registerLivePeer failed: ${json.error ?? "unknown"}`);
+  }
+  return {
+    id: json.id,
+    cleanup: () => { try { proc.kill(); } catch {} },
+  };
+}

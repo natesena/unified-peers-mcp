@@ -113,6 +113,61 @@ cp plugins/opencode-peers.ts ~/.config/opencode/plugins/
 
 Without it, messages still arrive via polling (~1s delay).
 
+## Orchestrator pattern (teams, availability, task lifecycle)
+
+Each peer carries an **AgentCard**-style identity beyond `summary`:
+
+| Field    | Type                                | Default       | Purpose                                              |
+|----------|-------------------------------------|---------------|------------------------------------------------------|
+| `status` | enum `available \| busy \| away`   | `'available'` | Typed availability — primary filter for "who's free." |
+| `team`   | nullable string (free text)         | `null`        | Two peers with the same `team` are on the same team. |
+| `role`   | nullable string (free text)         | `null`        | Convention: `orchestrator`, `worker`, `reviewer`.    |
+| `skills` | nullable `string[]` (free text)     | `null`        | Capability tags (`["rust", "sql"]`). Filterable.     |
+
+Messages can be tagged as **tasks** with a sender-chosen `task_id`. The recipient transitions the task through a typed lifecycle (`working → completed | failed | canceled`) via `set_task_state`, so the sender can see whether the work is done — without polling for free-form acknowledgments.
+
+This split (typed status enum + free-text team/role/skills + typed task lifecycle) is the same shape used by Google A2A, AutoGen, CrewAI, and LangGraph. Not adopted here on purpose: claim/release locks, JSON-RPC, auth, SSE streaming, well-known-URL discovery, cross-machine transport. Localhost humans-in-the-loop don't need them.
+
+### Canonical flow
+
+1. **Orchestrator declares itself:**
+   ```ts
+   set_status({ status: "busy", team: "auth-refactor", role: "orchestrator", skills: ["planning"] })
+   ```
+2. **Find a worker:**
+   ```ts
+   list_peers({ scope: "machine", status: "available", skill: "rust" })
+   ```
+3. **Assign a task:**
+   ```ts
+   send_message({ to_ids: ["<worker>"], message: "refactor /auth/middleware", task_id: "auth-refactor-001" })
+   // worker also calls:
+   set_status({ status: "busy", team: "auth-refactor", role: "worker" })
+   ```
+4. **Worker reports done:**
+   ```ts
+   set_task_state({ task_id: "auth-refactor-001", state: "completed" })
+   ```
+5. **Reset:**
+   ```ts
+   set_status({ status: "available", team: null, role: null })
+   ```
+
+### MCP tools
+
+| Tool             | Purpose                                                                                       |
+|------------------|-----------------------------------------------------------------------------------------------|
+| `list_peers`     | Discover peers. Optional filters: `status`, `team`, `skill` (exact match on each).            |
+| `send_message`   | Send to one or many peers. Optional `task_id` tags the message as trackable work.             |
+| `set_summary`    | Update your 1-2 sentence summary (also rewrites your terminal title).                         |
+| `set_status`     | Partial update of `status` / `team` / `role` / `skills`. `null` clears the nullable fields.   |
+| `set_task_state` | As recipient, transition a task you own to `working` / `completed` / `failed` / `canceled`.   |
+| `check_messages` | Manually drain the polling queue.                                                             |
+
+Ownership semantics: only a recipient of a task-tagged message can call `set_task_state` for that `task_id`. The sender (or an unrelated peer) gets HTTP 403. State transitions are NOT enforced in v1 — `completed → working` is allowed.
+
+For multi-recipient sends with a shared `task_id`, each recipient gets their own row keyed by `(task_id, to_id)` — one recipient's state change does not affect another's.
+
 ## Delivery semantics
 
 For each `runtime` value the broker has a different delivery contract. The relevant detail when reasoning about message loss:
@@ -174,11 +229,13 @@ Caveats:
 | POST | `/register-plugin` | Out-of-band registration of a runtime-specific helper port |
 | POST | `/heartbeat` | Update `last_seen` |
 | POST | `/set-summary` | Update peer's 1-2 sentence summary (also rewrites the host terminal's window title) |
+| POST | `/set-status` | Partial update of `status` / `team` / `role` / `skills`. Validates enum; `null` clears nullable fields. 400 on bad input, 404 on unknown peer. |
+| POST | `/set-task-state` | Recipient transitions a task they own to `working` / `completed` / `failed` / `canceled`. 400 on bad state, 403 on ownership failure, 404 on unknown task. |
 | POST | `/clear-title` | Reset the peer's terminal window title (called by MCP servers on graceful shutdown) |
 | POST | `/retitle` | Re-assert the peer's current title (recovery for clobbered titles; 404 on unknown peer) |
-| POST | `/list-peers` | List peers (with scope and optional `runtime` filter) |
-| POST | `/send-message` | Route a message |
-| POST | `/poll-messages` | Pull undelivered messages for a peer |
+| POST | `/list-peers` | List peers. Optional filters: `runtime`, `status`, `team`, `skill` (exact match on each). |
+| POST | `/send-message` | Route a message. Optional `task_id` tags it as a trackable task starting at `task_state='working'`. |
+| POST | `/poll-messages` | Pull undelivered messages for a peer (each message includes `task_id` and `task_state` when set) |
 | POST | `/unregister` | Remove a peer |
 
 ## Bun

@@ -6,7 +6,8 @@ Cross-runtime peer messaging broker. Owns one localhost daemon + one CLI shared 
 
 - `broker.ts` — singleton HTTP daemon on `localhost:7900` + SQLite at `~/.peers.db`. Auto-launched by MCP servers when they start.
 - `cli.ts` — diagnose / status / peers / send / clean-orphans / kill-broker.
-- `shared/types.ts` — canonical Peer, Message, request/response types.
+- `shared/types.ts` — canonical Peer, Message, request/response types. Includes `PeerStatus` and `TaskState` enums.
+- `shared/status.ts` — pure helpers around `status`/`team`/`role`/`skills`: enum validators, skills JSON parse/serialize. Co-located unit tests in `status.test.ts`.
 - `shared/runtimes.ts` — **the extensibility surface**. Closed `RUNTIMES` enum + instant-delivery handler registry. Add a new runtime here.
 - `shared/summarize.ts` — auto-summary helper using gpt-5.4-nano (used by `runtimes/claude/server.ts`).
 - `runtimes/claude/server.ts` — the claude runtime's MCP server. Polls broker every 1s, pushes via `mcp.notification("notifications/claude/channel", …)`. Lives here because it's small and has no runtime-specific helper code.
@@ -61,6 +62,22 @@ Bun's built-in test runner — `import { test, expect, describe, beforeAll, afte
 - We don't try to render in a real terminal — that's the human-verification step on PRs.
 
 **Tests must accompany the feature.** Don't merge a feature without its tests. Don't merge a PR without README/CLAUDE.md/AGENTS.md updates covering user-visible changes.
+
+## AgentCard fields on peers (status / team / role / skills)
+
+Each peer row carries a typed `status` (enum: `available | busy | away`, defaults to `available`) plus three nullable free-text fields: `team`, `role`, `skills` (JSON-encoded TEXT column, exposed to callers as `string[] | null`).
+
+- **Set via `/set-status`** (or the `set_status` MCP tool). Partial update — omitted fields unchanged; explicit `null` clears nullable ones; `status` is NOT NULL so passing `status: null` is a 400.
+- **Filter via `/list-peers`** with optional `status`, `team`, `skill` (exact match on each). Skill match is exact-string against the parsed array (no JSON substring false positives like `rust` vs `rust-analyzer`).
+- **Validation** lives in `shared/status.ts` (`isPeerStatus`, `isValidSkillsInput`); used by both `handleRegister` and `handleSetStatus` in the broker, and by both runtime MCP servers via the same enum constants exported from `shared/types.ts` (`PEER_STATUSES`, `TASK_STATES`).
+
+Why not auto-derive status from message activity / add a claim-release lock / forbid invalid state transitions? Localhost humans-in-the-loop don't need correctness primitives. The advisory typed-enum + free-text shape is what production multi-agent frameworks (A2A, AutoGen, CrewAI, LangGraph) settled on for the same reason. Revisit if real contention shows up.
+
+## Task lifecycle on messages
+
+Any message can be tagged with `task_id` at send time. When set, the persisted message row starts at `task_state='working'`. The recipient transitions it via `/set-task-state` (or the `set_task_state` MCP tool). Senders/strangers get HTTP 403; unknown task → 404; bad state → 400. State transitions are not enforced in v1.
+
+`send_message_multi` with a shared `task_id` writes one row per recipient — each recipient's `task_state` is independent.
 
 ## When adding a runtime
 

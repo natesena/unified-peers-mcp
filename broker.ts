@@ -18,6 +18,13 @@ import {
   isValidRuntime,
   RUNTIMES,
 } from "./shared/runtimes.ts";
+import {
+  isPeerStatus,
+  isTaskState,
+  isValidSkillsInput,
+  parseSkills,
+  serializeSkills,
+} from "./shared/status.ts";
 import { formatTitle } from "./shared/terminals/format.ts";
 import { getAdapter } from "./shared/terminals/index.ts";
 import type {
@@ -37,7 +44,9 @@ import type {
   SendMessageMultiResult,
   SendMessageRequest,
   SendMessageResponse,
+  SetStatusRequest,
   SetSummaryRequest,
+  SetTaskStateRequest,
 } from "./shared/types.ts";
 
 const PORT = parseInt(
@@ -65,6 +74,10 @@ db.run(`
     plugin_port INTEGER,
     terminal_program TEXT,
     summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'available',
+    team TEXT,
+    role TEXT,
+    skills TEXT,
     registered_at TEXT NOT NULL,
     last_seen TEXT NOT NULL
   )
@@ -76,6 +89,10 @@ for (const stmt of [
   "ALTER TABLE peers ADD COLUMN runtime TEXT NOT NULL DEFAULT 'opencode'",
   "ALTER TABLE peers ADD COLUMN plugin_port INTEGER",
   "ALTER TABLE peers ADD COLUMN terminal_program TEXT",
+  "ALTER TABLE peers ADD COLUMN status TEXT NOT NULL DEFAULT 'available'",
+  "ALTER TABLE peers ADD COLUMN team TEXT",
+  "ALTER TABLE peers ADD COLUMN role TEXT",
+  "ALTER TABLE peers ADD COLUMN skills TEXT",
 ]) {
   try { db.run(stmt); } catch { /* column already exists */ }
 }
@@ -89,12 +106,16 @@ db.run(`
     sent_at TEXT NOT NULL,
     delivered INTEGER NOT NULL DEFAULT 0,
     delivered_via TEXT,
+    task_id TEXT,
+    task_state TEXT,
     FOREIGN KEY (from_id) REFERENCES peers(id),
     FOREIGN KEY (to_id) REFERENCES peers(id)
   )
 `);
 
 try { db.run("ALTER TABLE messages ADD COLUMN delivered_via TEXT"); } catch {}
+try { db.run("ALTER TABLE messages ADD COLUMN task_id TEXT"); } catch {}
+try { db.run("ALTER TABLE messages ADD COLUMN task_state TEXT"); } catch {}
 
 function cleanStalePeers() {
   const peers = db.query("SELECT id, pid FROM peers").all() as { id: string; pid: number }[];
@@ -112,8 +133,8 @@ cleanStalePeers();
 setInterval(cleanStalePeers, 30_000);
 
 const insertPeer = db.prepare(`
-  INSERT INTO peers (id, pid, cwd, git_root, tty, runtime, plugin_port, terminal_program, summary, registered_at, last_seen)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO peers (id, pid, cwd, git_root, tty, runtime, plugin_port, terminal_program, summary, status, team, role, skills, registered_at, last_seen)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updatePluginPort = db.prepare(`UPDATE peers SET plugin_port = ? WHERE id = ?`);
@@ -126,8 +147,8 @@ const selectAllPeers = db.prepare(`SELECT * FROM peers`);
 const selectPeersByDirectory = db.prepare(`SELECT * FROM peers WHERE cwd = ?`);
 const selectPeersByGitRoot = db.prepare(`SELECT * FROM peers WHERE git_root = ?`);
 const insertMessage = db.prepare(`
-  INSERT INTO messages (from_id, to_id, text, sent_at, delivered, delivered_via)
-  VALUES (?, ?, ?, ?, ?, ?)
+  INSERT INTO messages (from_id, to_id, text, sent_at, delivered, delivered_via, task_id, task_state)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const selectUndelivered = db.prepare(`
   SELECT * FROM messages WHERE to_id = ? AND delivered = 0 ORDER BY sent_at ASC
@@ -140,6 +161,28 @@ const selectLastDeliveryToPeer = db.prepare(`
   WHERE to_id = ? AND delivered = 1
   ORDER BY id DESC LIMIT 1
 `);
+const selectAnyTaskRow = db.prepare(`SELECT id FROM messages WHERE task_id = ? LIMIT 1`);
+const selectTaskRowForRecipient = db.prepare(
+  `SELECT id FROM messages WHERE task_id = ? AND to_id = ? LIMIT 1`,
+);
+const updateTaskState = db.prepare(
+  `UPDATE messages SET task_state = ? WHERE task_id = ? AND to_id = ?`,
+);
+
+/**
+ * Convert a raw SQLite row to the Peer shape callers expect.
+ *
+ * The DB stores `skills` as a JSON-encoded TEXT column so the schema stays
+ * simple TEXT/INTEGER. Callers always see `string[] | null`. Doing the parse
+ * here means every read path (list-peers, diagnose, set-summary lookup, …)
+ * gets consistent output without each callsite repeating the parse.
+ */
+function rowToPeer(row: Record<string, unknown>): Peer {
+  return {
+    ...(row as unknown as Peer),
+    skills: parseSkills(row.skills as string | null),
+  };
+}
 
 function generateId(): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -155,6 +198,14 @@ const pendingPlugins = new Map<number, number>();
 function handleRegister(body: RegisterRequest): RegisterResponse | { error: string } {
   if (!isValidRuntime(body.runtime)) {
     return { error: `unknown runtime "${body.runtime}". valid: ${RUNTIMES.join(", ")}` };
+  }
+  // Validate optional AgentCard fields before we insert, so partial-write
+  // anomalies (one bad field nulling everything) can't happen.
+  if (body.status !== undefined && !isPeerStatus(body.status)) {
+    return { error: `invalid status "${String(body.status)}". valid: available, busy, away` };
+  }
+  if (body.skills !== undefined && !isValidSkillsInput(body.skills)) {
+    return { error: "invalid skills: must be an array of strings or null" };
   }
   const id = generateId();
   const now = new Date().toISOString();
@@ -181,6 +232,10 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
     pluginPort,
     body.terminal_program ?? null,
     body.summary,
+    body.status ?? "available",
+    body.team ?? null,
+    body.role ?? null,
+    serializeSkills(body.skills),
     now,
     now,
   );
@@ -226,6 +281,97 @@ function handleSetSummary(body: SetSummaryRequest): void {
 }
 
 /**
+ * Partial update of a peer's AgentCard-style fields. Each optional key in
+ * SetStatusRequest is applied iff present in the body; explicit `null` clears
+ * the column (only valid for the nullable team/role/skills — status is NOT NULL).
+ *
+ * Returns { ok: true } / 404 / 400. Validation runs first so an invalid status
+ * doesn't partially apply other fields.
+ */
+function handleSetStatus(body: SetStatusRequest): { ok: true } | { error: string; status: number } {
+  const exists = db.query("SELECT id FROM peers WHERE id = ?").get(body.id) as { id: string } | null;
+  if (!exists) return { error: `peer ${body.id} not found`, status: 404 };
+
+  if ("status" in body && body.status !== undefined) {
+    if (body.status === null || !isPeerStatus(body.status)) {
+      return {
+        error: `invalid status "${String(body.status)}". valid: available, busy, away`,
+        status: 400,
+      };
+    }
+  }
+  if ("skills" in body && body.skills !== undefined && !isValidSkillsInput(body.skills)) {
+    return { error: "invalid skills: must be an array of strings or null", status: 400 };
+  }
+  // team and role are free-text. Reject only obvious wrong-types — they must be
+  // string or null (or omitted). Strings of any content (incl. empty) are kept
+  // verbatim; clearing is null.
+  for (const key of ["team", "role"] as const) {
+    if (key in body && body[key] !== undefined && body[key] !== null && typeof body[key] !== "string") {
+      return { error: `invalid ${key}: must be a string or null`, status: 400 };
+    }
+  }
+
+  const sets: string[] = [];
+  const args: (string | null)[] = [];
+  if ("status" in body && body.status !== undefined) {
+    sets.push("status = ?");
+    args.push(body.status);
+  }
+  if ("team" in body && body.team !== undefined) {
+    sets.push("team = ?");
+    args.push(body.team);
+  }
+  if ("role" in body && body.role !== undefined) {
+    sets.push("role = ?");
+    args.push(body.role);
+  }
+  if ("skills" in body && body.skills !== undefined) {
+    sets.push("skills = ?");
+    args.push(serializeSkills(body.skills));
+  }
+  if (sets.length === 0) return { ok: true }; // no-op read-modify-write
+
+  args.push(body.id);
+  db.run(`UPDATE peers SET ${sets.join(", ")} WHERE id = ?`, args);
+  return { ok: true };
+}
+
+/**
+ * Worker transitions a task they own to a new state. Ownership =
+ * caller's id (body.id) appears as `to_id` on at least one row tagged
+ * with task_id. Returns 404 if the task doesn't exist at all, 403 if
+ * it exists but the caller isn't a recipient.
+ */
+function handleSetTaskState(
+  body: SetTaskStateRequest,
+): { ok: true } | { error: string; status: number } {
+  if (!isTaskState(body.state)) {
+    return {
+      error: `invalid task state "${String(body.state)}". valid: working, completed, failed, canceled`,
+      status: 400,
+    };
+  }
+  if (typeof body.task_id !== "string" || body.task_id.length === 0) {
+    return { error: "task_id must be a non-empty string", status: 400 };
+  }
+  if (typeof body.id !== "string" || body.id.length === 0) {
+    return { error: "id (caller peer id) is required", status: 400 };
+  }
+  const anyRow = selectAnyTaskRow.get(body.task_id) as { id: number } | null;
+  if (!anyRow) return { error: `task ${body.task_id} not found`, status: 404 };
+  const ownedRow = selectTaskRowForRecipient.get(body.task_id, body.id) as { id: number } | null;
+  if (!ownedRow) {
+    return {
+      error: `peer ${body.id} is not a recipient of task ${body.task_id}`,
+      status: 403,
+    };
+  }
+  updateTaskState.run(body.state, body.task_id, body.id);
+  return { ok: true };
+}
+
+/**
  * Reset a peer's terminal title. Called by MCP servers on graceful shutdown
  * so the user isn't left looking at a stale agent summary.
  *
@@ -256,25 +402,35 @@ function handleRetitle(body: RetitleRequest): { ok: boolean; error?: string } {
 }
 
 function handleListPeers(body: ListPeersRequest): Peer[] {
-  let peers: Peer[];
+  let rawRows: Record<string, unknown>[];
   switch (body.scope) {
     case "machine":
-      peers = selectAllPeers.all() as Peer[];
+      rawRows = selectAllPeers.all() as Record<string, unknown>[];
       break;
     case "directory":
-      peers = selectPeersByDirectory.all(body.cwd) as Peer[];
+      rawRows = selectPeersByDirectory.all(body.cwd) as Record<string, unknown>[];
       break;
     case "repo":
-      peers = body.git_root
-        ? (selectPeersByGitRoot.all(body.git_root) as Peer[])
-        : (selectPeersByDirectory.all(body.cwd) as Peer[]);
+      rawRows = body.git_root
+        ? (selectPeersByGitRoot.all(body.git_root) as Record<string, unknown>[])
+        : (selectPeersByDirectory.all(body.cwd) as Record<string, unknown>[]);
       break;
     default:
-      peers = selectAllPeers.all() as Peer[];
+      rawRows = selectAllPeers.all() as Record<string, unknown>[];
   }
+
+  let peers = rawRows.map(rowToPeer);
 
   if (body.exclude_id) peers = peers.filter((p) => p.id !== body.exclude_id);
   if (body.runtime) peers = peers.filter((p) => p.runtime === body.runtime);
+  if (body.status) peers = peers.filter((p) => p.status === body.status);
+  if (body.team) peers = peers.filter((p) => p.team === body.team);
+  // Skill filter: exact string match within the parsed skills array. Avoids
+  // the JSON-substring false positive (`rust` vs `rust-analyzer`) we'd get
+  // from a naive LIKE. With small N (<= a few hundred peers) the in-memory
+  // pass is cheaper than wiring SQLite's json_each through the prepared-
+  // statement layer.
+  if (body.skill) peers = peers.filter((p) => p.skills?.includes(body.skill!) ?? false);
 
   return peers.filter((p) => {
     try {
@@ -316,11 +472,15 @@ async function deliverToOne(
   text: string,
   ctx: SenderContext,
   now: string,
+  taskId: string | null,
 ): Promise<{ ok: boolean; error?: string; delivered_via?: "instant" | "poll" | "poll_after_failure"; latency_ms?: number }> {
   const recipient = db.query("SELECT * FROM peers WHERE id = ?").get(toId) as Peer | null;
   if (!recipient) {
     return { ok: false, error: `Peer ${toId} not found` };
   }
+
+  // A task-tagged message starts as 'working'; non-task messages have no state.
+  const taskState = taskId ? "working" : null;
 
   const handler = getInstantDelivery(recipient.runtime);
 
@@ -343,20 +503,20 @@ async function deliverToOne(
       // mcp.notification synchronously and don't need the fallback. See upm-uab.
       const markedDelivered = recipient.runtime === "opencode" ? 0 : 1;
       try {
-        insertMessage.run(fromId, toId, text, now, markedDelivered, recipient.runtime);
+        insertMessage.run(fromId, toId, text, now, markedDelivered, recipient.runtime, taskId, taskState);
       } catch {}
       return { ok: true, delivered_via: "instant", latency_ms: result.latency_ms };
     }
     // Handler tried and failed → polling fallback
     try {
-      insertMessage.run(fromId, toId, text, now, 0, null);
+      insertMessage.run(fromId, toId, text, now, 0, null, taskId, taskState);
     } catch {}
     return { ok: true, delivered_via: "poll_after_failure", latency_ms: result.latency_ms };
   }
 
   // No instant handler for this runtime → straight to polling
   try {
-    insertMessage.run(fromId, toId, text, now, 0, null);
+    insertMessage.run(fromId, toId, text, now, 0, null, taskId, taskState);
   } catch {}
   return { ok: true, delivered_via: "poll", latency_ms: 0 };
 }
@@ -364,7 +524,7 @@ async function deliverToOne(
 async function handleSendMessage(body: SendMessageRequest): Promise<SendMessageResponse> {
   const ctx = loadSenderContext(body.from_id);
   const now = new Date().toISOString();
-  return deliverToOne(body.to_id, body.from_id, body.text, ctx, now);
+  return deliverToOne(body.to_id, body.from_id, body.text, ctx, now, body.task_id ?? null);
 }
 
 async function handleSendMessageMulti(body: SendMessageMultiRequest): Promise<SendMessageMultiResponse> {
@@ -373,10 +533,11 @@ async function handleSendMessageMulti(body: SendMessageMultiRequest): Promise<Se
   }
   const ctx = loadSenderContext(body.from_id);
   const now = new Date().toISOString();
+  const taskId = body.task_id ?? null;
 
   const results = await Promise.all(
     body.to_ids.map(async (toId): Promise<SendMessageMultiResult> => {
-      const r = await deliverToOne(toId, body.from_id, body.text, ctx, now);
+      const r = await deliverToOne(toId, body.from_id, body.text, ctx, now, taskId);
       return { to_id: toId, ...r };
     }),
   );
@@ -394,7 +555,8 @@ function handleUnregister(body: { id: string }): void {
 }
 
 function handleDiagnose(): unknown {
-  const peers = selectAllPeers.all() as Peer[];
+  const rawRows = selectAllPeers.all() as Record<string, unknown>[];
+  const peers = rawRows.map(rowToPeer);
   const enriched = peers.map((p) => {
     let alive = false;
     try { process.kill(p.pid, 0); alive = true; } catch {}
@@ -408,6 +570,10 @@ function handleDiagnose(): unknown {
       git_root: p.git_root,
       runtime: p.runtime,
       summary: p.summary,
+      status: p.status,
+      team: p.team,
+      role: p.role,
+      skills: p.skills,
       plugin_port: p.plugin_port,
       last_seen: p.last_seen,
       last_delivery_at: lastDelivery?.sent_at ?? null,
@@ -457,6 +623,20 @@ Bun.serve({
         case "/set-summary":
           handleSetSummary(body as SetSummaryRequest);
           return Response.json({ ok: true });
+        case "/set-status": {
+          const result = handleSetStatus(body as SetStatusRequest);
+          if ("error" in result) {
+            return Response.json({ error: result.error }, { status: result.status });
+          }
+          return Response.json(result);
+        }
+        case "/set-task-state": {
+          const result = handleSetTaskState(body as SetTaskStateRequest);
+          if ("error" in result) {
+            return Response.json({ error: result.error }, { status: result.status });
+          }
+          return Response.json(result);
+        }
         case "/clear-title":
           handleClearTitle(body as ClearTitleRequest);
           return Response.json({ ok: true });

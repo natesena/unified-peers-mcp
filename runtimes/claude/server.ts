@@ -33,6 +33,7 @@ import type {
   PollMessagesResponse,
   SendMessageMultiResponse,
 } from "../../shared/types.ts";
+import { PEER_STATUSES, TASK_STATES } from "../../shared/types.ts";
 import {
   generateSummary,
   getGitBranch,
@@ -140,20 +141,31 @@ IMPORTANT: When you receive a <channel source="unified-peers" ...> message, RESP
 Read the from_id, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with to_ids: [their from_id].
 
 Available tools:
-- list_peers: Discover other peers across runtimes (scope: machine/directory/repo)
-- send_message: Send a message to one or more peers by ID. Pass to_ids as an array — use a single-element array for one recipient, or several IDs to fan out the same message in one call.
-- set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers)
-- check_messages: Manually check for new messages
+- list_peers: Discover other peers across runtimes (scope: machine/directory/repo). Optionally filter by status/team/skill to find specific peers.
+- send_message: Send a message to one or more peers by ID. Pass to_ids as an array — use a single-element array for one recipient, or several IDs to fan out the same message in one call. Optionally tag with task_id when assigning trackable work.
+- set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers).
+- set_status: Update your AgentCard — availability (available/busy/away), team membership, role, and skills. Other peers (especially orchestrators) use these to pick who to task.
+- set_task_state: As a worker, transition a task you received to working/completed/failed/canceled. The orchestrator who sent the task sees this state via list_peers or message history.
+- check_messages: Manually check for new messages.
 
-When you start, proactively call set_summary to describe what you're working on. This helps other instances understand your context.`,
+When you start, proactively call set_summary to describe what you're working on. This helps other instances understand your context.
+
+## Orchestrator pattern
+
+To coordinate a multi-agent task:
+1. Declare yourself: set_status(status='busy', team='<task-name>', role='orchestrator', skills=[...])
+2. Find workers: list_peers(status='available', skill='<needed skill>')
+3. Assign work: send_message(to_ids=[...], message='do X', task_id='<task-name>-001'); also ask each worker to set_status(status='busy', team='<task-name>', role='worker')
+4. Workers transition on done: set_task_state(task_id='<task-name>-001', state='completed')
+5. Everyone resets: set_status(status='available', team=null, role=null)`,
   }
 );
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: "list_peers",
     description:
-      "List other peers running on this machine across all runtimes (Claude Code and opencode). Returns their ID, runtime, working directory, git repo, and summary.",
+      "List other peers running on this machine across all runtimes (Claude Code and opencode). Returns their ID, runtime, working directory, git repo, summary, status, team, role, and skills. Optionally filter by status, team, or skill to narrow the result — useful for orchestrators looking for available workers with a specific capability.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -163,6 +175,21 @@ const TOOLS = [
           description:
             'Scope of peer discovery. "machine" = all instances on this computer. "directory" = same working directory. "repo" = same git repository.',
         },
+        status: {
+          type: "string" as const,
+          enum: [...PEER_STATUSES],
+          description:
+            'Optional. Only return peers with this status (e.g. "available" to find free workers).',
+        },
+        team: {
+          type: "string" as const,
+          description: "Optional. Only return peers on this team (exact-match free-text label).",
+        },
+        skill: {
+          type: "string" as const,
+          description:
+            'Optional. Only return peers whose skills array contains this exact string (e.g. "rust").',
+        },
       },
       required: ["scope"],
     },
@@ -170,7 +197,7 @@ const TOOLS = [
   {
     name: "send_message",
     description:
-      "Send a message to one or more peers by ID. Pass `to_ids: [\"abc\"]` for a single peer, or `to_ids: [\"abc\", \"def\", ...]` to fan out to several peers in one call (the same message is delivered to each). Routed via the unified-peers-mcp broker — instant for runtimes with a push handler, otherwise queued for ~1s polling. Each recipient is delivered to independently; one failure does not block the others.",
+      "Send a message to one or more peers by ID. Pass `to_ids: [\"abc\"]` for a single peer, or `to_ids: [\"abc\", \"def\", ...]` to fan out to several peers in one call (the same message is delivered to each). Routed via the unified-peers-mcp broker — instant for runtimes with a push handler, otherwise queued for ~1s polling. Each recipient is delivered to independently; one failure does not block the others. Optionally pass `task_id` to tag the message as trackable work — recipients can then transition it via set_task_state and you can see progress via list_peers or message history.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -184,6 +211,11 @@ const TOOLS = [
         message: {
           type: "string" as const,
           description: "The message to send. The same text goes to every recipient.",
+        },
+        task_id: {
+          type: "string" as const,
+          description:
+            'Optional. Tag this message as a trackable task. The recipient(s) start at task_state="working" and report progress via set_task_state. Choose a stable string like "auth-refactor-001".',
         },
       },
       required: ["to_ids", "message"],
@@ -205,6 +237,58 @@ const TOOLS = [
     },
   },
   {
+    name: "set_status",
+    description:
+      "Update your AgentCard fields: availability (status), team membership, role, and skills. Partial update — fields you omit are unchanged; passing null explicitly clears team/role/skills. status cannot be cleared (always one of available/busy/away). Other peers (especially orchestrators) use these to decide who to task. Convention: status='available' = free to take work; team='<task-name>' = working on a shared effort; role='orchestrator' or 'worker'; skills=['rust','sql'] = capabilities.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        status: {
+          type: "string" as const,
+          enum: [...PEER_STATUSES],
+          description:
+            'Your availability. "available" = free to take new work; "busy" = currently on a task; "away" = not actively monitoring.',
+        },
+        team: {
+          type: ["string", "null"] as unknown as "string",
+          description:
+            "Free-text team label. Two peers with the same value are on the same team. Pass null to clear.",
+        },
+        role: {
+          type: ["string", "null"] as unknown as "string",
+          description:
+            'Free-text role. Common values: "orchestrator", "worker", "reviewer". Pass null to clear.',
+        },
+        skills: {
+          type: ["array", "null"] as unknown as "array",
+          items: { type: "string" as const },
+          description:
+            'Free-text capability tags (e.g. ["rust","sql","frontend"]). Other peers filter by these via list_peers. Pass null to clear.',
+        },
+      },
+    },
+  },
+  {
+    name: "set_task_state",
+    description:
+      "As the recipient of a task-tagged message, transition the task to a new state. Only the recipient peer(s) can call this for a given task_id. Use this so the orchestrator who sent the task can see when you are done. Valid states: working (in progress), completed (done successfully), failed (could not complete), canceled (abandoned).",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        task_id: {
+          type: "string" as const,
+          description: "The task_id from the message you received.",
+        },
+        state: {
+          type: "string" as const,
+          enum: [...TASK_STATES],
+          description: "New task state.",
+        },
+      },
+      required: ["task_id", "state"],
+    },
+  },
+  {
     name: "check_messages",
     description:
       "Manually check for new messages. Messages are normally pushed automatically via channel notifications; this is a fallback.",
@@ -222,16 +306,28 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   switch (name) {
     case "list_peers": {
-      const scope = (args as { scope: string }).scope as "machine" | "directory" | "repo";
+      const a = args as { scope: string; status?: string; team?: string; skill?: string };
+      const scope = a.scope as "machine" | "directory" | "repo";
       try {
         const peers = await brokerFetch<Peer[]>("/list-peers", {
           scope,
           cwd: myCwd,
           git_root: myGitRoot,
           exclude_id: myId,
+          status: a.status,
+          team: a.team,
+          skill: a.skill,
         });
+        const filterDesc = [
+          a.status && `status=${a.status}`,
+          a.team && `team=${a.team}`,
+          a.skill && `skill=${a.skill}`,
+        ].filter(Boolean).join(", ");
+        const header = filterDesc
+          ? `scope: ${scope}; filters: ${filterDesc}`
+          : `scope: ${scope}`;
         if (peers.length === 0) {
-          return { content: [{ type: "text" as const, text: `No other peers found (scope: ${scope}).` }] };
+          return { content: [{ type: "text" as const, text: `No other peers found (${header}).` }] };
         }
         const lines = peers.map((p) => {
           const parts = [
@@ -242,18 +338,22 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           ];
           if (p.git_root) parts.push(`Repo: ${p.git_root}`);
           if (p.tty) parts.push(`TTY: ${p.tty}`);
+          parts.push(`Status: ${p.status}`);
+          if (p.team) parts.push(`Team: ${p.team}`);
+          if (p.role) parts.push(`Role: ${p.role}`);
+          if (p.skills && p.skills.length > 0) parts.push(`Skills: ${p.skills.join(", ")}`);
           if (p.summary) parts.push(`Summary: ${p.summary}`);
           parts.push(`Last seen: ${p.last_seen}`);
           return parts.join("\n  ");
         });
-        return { content: [{ type: "text" as const, text: `Found ${peers.length} peer(s) (scope: ${scope}):\n\n${lines.join("\n\n")}` }] };
+        return { content: [{ type: "text" as const, text: `Found ${peers.length} peer(s) (${header}):\n\n${lines.join("\n\n")}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: `Error listing peers: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
       }
     }
 
     case "send_message": {
-      const { to_ids, message } = args as { to_ids: string[]; message: string };
+      const { to_ids, message, task_id } = args as { to_ids: string[]; message: string; task_id?: string };
       if (!myId) {
         return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
       }
@@ -263,7 +363,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       try {
         const result = await brokerFetch<SendMessageMultiResponse>(
           "/send-message-multi",
-          { from_id: myId, to_ids, text: message },
+          { from_id: myId, to_ids, text: message, task_id: task_id ?? null },
         );
 
         // Single-recipient: keep the old terse output.
@@ -334,6 +434,45 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: "text" as const, text: `Summary updated: "${summary}"` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: `Error setting summary: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
+      }
+    }
+
+    case "set_status": {
+      if (!myId) {
+        return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
+      }
+      const a = args as { status?: string; team?: string | null; role?: string | null; skills?: string[] | null };
+      // Forward only the fields the caller actually provided. Distinguishing
+      // "absent" from "explicit null" matters: absent = no change, null = clear.
+      const body: Record<string, unknown> = { id: myId };
+      if ("status" in a) body.status = a.status;
+      if ("team" in a) body.team = a.team;
+      if ("role" in a) body.role = a.role;
+      if ("skills" in a) body.skills = a.skills;
+      try {
+        await brokerFetch("/set-status", body);
+        const summary = [
+          a.status !== undefined && `status=${a.status}`,
+          "team" in a && `team=${a.team === null ? "(cleared)" : a.team}`,
+          "role" in a && `role=${a.role === null ? "(cleared)" : a.role}`,
+          "skills" in a && `skills=${a.skills === null ? "(cleared)" : JSON.stringify(a.skills)}`,
+        ].filter(Boolean).join(", ");
+        return { content: [{ type: "text" as const, text: summary ? `Status updated: ${summary}` : "No changes." }] };
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: `Error setting status: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
+      }
+    }
+
+    case "set_task_state": {
+      if (!myId) {
+        return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
+      }
+      const { task_id, state } = args as { task_id: string; state: string };
+      try {
+        await brokerFetch("/set-task-state", { id: myId, task_id, state });
+        return { content: [{ type: "text" as const, text: `Task ${task_id} → ${state}` }] };
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: `Error setting task state: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
       }
     }
 
@@ -508,7 +647,12 @@ async function main() {
   process.on("SIGTERM", cleanup);
 }
 
-main().catch((e) => {
-  log(`Fatal: ${e instanceof Error ? e.message : String(e)}`);
-  process.exit(1);
-});
+// Only start the server when this module is executed directly (`bun server.ts`).
+// On `import`, we still export TOOLS so tests can introspect the tool list
+// without triggering the broker auto-launch or the MCP stdio connection.
+if (import.meta.main) {
+  main().catch((e) => {
+    log(`Fatal: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  });
+}
